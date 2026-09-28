@@ -517,6 +517,7 @@ function App() {
         minWidth: 900,
         minHeight: 600,
         decorations: false,
+        shadow: false,
       });
       editor.once("tauri://created", () => {
         void getCurrentWindow().close();
@@ -1242,7 +1243,7 @@ function App() {
                   </div>
                 )}
                 {settingsCategory === "md" && (
-                  <div className="settings-panel">
+                  <div className="settings-panel text-type-panel">
                     <section>
                       <h3>默认预览方式</h3>
                       <p>之后每次打开 Markdown 文件时，都会自动使用此视图。</p>
@@ -1276,7 +1277,7 @@ function App() {
                   </div>
                 )}
                 {settingsCategory === "json" && (
-                  <div className="settings-panel">
+                  <div className="settings-panel text-type-panel">
                     <section>
                       <h3>JSON</h3>
                       <p>JSON 的树形预览、格式化和校验选项将在这里提供。</p>
@@ -1284,7 +1285,7 @@ function App() {
                   </div>
                 )}
                 {settingsCategory === "text" && (
-                  <div className="settings-panel">
+                  <div className="settings-panel text-type-panel">
                     <section>
                       <h3>文本</h3>
                       <p>纯文本的换行、编码和阅读宽度选项将在这里提供。</p>
@@ -1292,7 +1293,7 @@ function App() {
                   </div>
                 )}
                 {settingsCategory === "csv" && (
-                  <div className="settings-panel">
+                  <div className="settings-panel text-type-panel">
                     <section>
                       <h3>CSV</h3>
                       <p>CSV 的分隔符、首行表头和表格视图选项将在这里提供。</p>

@@ -2099,3 +2099,14 @@ textarea::-webkit-scrollbar-thumb:hover,
   outline: 2px solid #76a9ff;
   outline-offset: 2px;
 }
+
+/* Keep text-type preference pages visually stable while their contents change. */
+.settings-panel.text-type-panel {
+  grid-auto-rows: min-content;
+}
+.settings-panel.text-type-panel > section {
+  min-height: 164px;
+}
+.settings-panel.text-type-panel .view-default-options {
+  min-height: 41px;
+}
