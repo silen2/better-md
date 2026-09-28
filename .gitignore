@@ -1,0 +1,19 @@
+# JavaScript dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+
+# Rust and Tauri build output
+src-tauri/target/
+
+# Local settings, credentials and release-signing material
+.env
+.env.*
+!.env.example
+*.key
+*.key.pub
+*.pem
+*.p12
+*.pfx

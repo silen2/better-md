@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "BetterMD",
+  "version": "0.1.0",
+  "identifier": "com.bettermd.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "navigator",
+        "title": "BetterMD",
+        "width": 720,
+        "height": 620,
+        "minWidth": 620,
+        "minHeight": 520,
+        "resizable": true,
+        "decorations": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "fileAssociations": [
+      {
+        "ext": ["md"],
+        "name": "BetterMD Markdown",
+        "description": "BetterMD Markdown Document",
+        "mimeType": "text/markdown",
+        "role": "Editor"
+      }
+    ]
+  }
+}
