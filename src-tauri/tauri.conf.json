@@ -25,7 +25,8 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "fileAssociations": [
       {
         "ext": ["md"],
@@ -35,5 +36,17 @@
         "role": "Editor"
       }
     ]
+  },
+  "plugins": {
+    "updater": {
+      "requireSignedVersion": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDAwODM0QjkzQzZFODQ4MjEKUldRaFNPakdrMHVEQVAreElUTDAxREk1RlA1ZE1GaXQyQXJuNFpsT1dwcW1sNGJoamo3Rmh5WFQK",
+      "endpoints": [
+        "https://github.com/silen2/better-md/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

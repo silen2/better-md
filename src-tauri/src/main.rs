@@ -1,7 +1,6 @@
 use serde::Serialize;
 use std::{
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -81,7 +80,12 @@ fn read_text_file(path: String) -> Result<String, String> {
 /// Only a real file is accepted so normal Tauri command-line flags are ignored.
 #[tauri::command]
 fn startup_file() -> Option<StartupFile> {
-    let supported_types = vec!["md".to_string(), "json".to_string(), "text".to_string(), "csv".to_string()];
+    let supported_types = vec![
+        "md".to_string(),
+        "json".to_string(),
+        "text".to_string(),
+        "csv".to_string(),
+    ];
     env::args_os().skip(1).find_map(|argument| {
         let path = PathBuf::from(argument);
         if !path.is_file() || supported(&path, &supported_types).is_none() {
@@ -133,6 +137,7 @@ fn search_workspace(root: String, extensions: Vec<String>, query: String) -> Vec
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             scan_workspace,

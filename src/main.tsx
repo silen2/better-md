@@ -1,9 +1,16 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createRoot } from "react-dom/client";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { check } from "@tauri-apps/plugin-updater";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -367,6 +374,11 @@ function App() {
     { path: string; line: number; text: string }[]
   >([]);
   const [error, setError] = useState<string>();
+  const pendingUpdate = useRef<Awaited<ReturnType<typeof check>>>(null);
+  const [updateStatus, setUpdateStatus] = useState<
+    "idle" | "checking" | "available" | "current" | "installing" | "error"
+  >("idle");
+  const [updateVersion, setUpdateVersion] = useState<string>();
 
   const rescan = useCallback(
     async (folder = root, selected = kinds) => {
@@ -650,6 +662,34 @@ function App() {
     closeMenu();
     setSettingsCategory("general");
     setSettings(true);
+  };
+  const checkForUpdates = async () => {
+    if (!runningInTauri()) {
+      setUpdateStatus("error");
+      setError("检查更新仅在已安装的 BetterMD 桌面应用中可用。");
+      return;
+    }
+    setUpdateStatus("checking");
+    try {
+      const update = await check();
+      pendingUpdate.current = update;
+      setUpdateVersion(update?.version);
+      setUpdateStatus(update ? "available" : "current");
+    } catch (reason) {
+      setUpdateStatus("error");
+      setError(`检查更新失败：${String(reason)}`);
+    }
+  };
+  const installUpdate = async () => {
+    const update = pendingUpdate.current;
+    if (!update) return;
+    setUpdateStatus("installing");
+    try {
+      await update.downloadAndInstall();
+    } catch (reason) {
+      setUpdateStatus("error");
+      setError(`下载更新失败：${String(reason)}`);
+    }
   };
 
   return (
@@ -1044,6 +1084,35 @@ function App() {
                 </header>
                 {settingsCategory === "general" && (
                   <div className="settings-panel">
+                    <section>
+                      <h3>应用更新</h3>
+                      <p>
+                        {updateStatus === "available"
+                          ? `发现 BetterMD ${updateVersion}，可下载并安装。`
+                          : updateStatus === "current"
+                            ? "当前已是最新版本。"
+                            : updateStatus === "checking"
+                              ? "正在检查更新…"
+                              : updateStatus === "installing"
+                                ? "正在下载并安装更新…"
+                                : "从 BetterMD 的正式发布版本检查更新。"}
+                      </p>
+                      {updateStatus === "available" ? (
+                        <button onClick={() => void installUpdate()}>
+                          下载并安装 {updateVersion}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => void checkForUpdates()}
+                          disabled={
+                            updateStatus === "checking" ||
+                            updateStatus === "installing"
+                          }
+                        >
+                          检查更新
+                        </button>
+                      )}
+                    </section>
                     <section>
                       <h3>最近打开</h3>
                       <p>
