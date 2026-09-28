@@ -11,15 +11,40 @@ import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check } from "@tauri-apps/plugin-updater";
+import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
+import { json } from "@codemirror/lang-json";
+import { bracketMatching } from "@codemirror/language";
+import { RangeSetBuilder } from "@codemirror/state";
+import {
+  Decoration,
+  EditorView,
+  ViewPlugin,
+  type DecorationSet,
+} from "@codemirror/view";
+import { oneDark } from "@codemirror/theme-one-dark";
+import { AgGridReact } from "ag-grid-react";
+import {
+  AllCommunityModule,
+  colorSchemeDark,
+  themeQuartz,
+  type ColDef,
+} from "ag-grid-community";
+import Papa from "papaparse";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Braces,
+  ChevronLeft,
+  ChevronRight,
   FileText,
   Folder,
   Keyboard,
+  ListFilter,
+  LocateFixed,
   Menu,
   Palette,
+  PanelLeftClose,
+  PanelLeftOpen,
   Settings,
   SlidersHorizontal,
   Table2,
@@ -46,6 +71,16 @@ type Appearance = {
 };
 type TextTypeSettings = { markdownView: ViewMode };
 type StartupFile = { path: string; workspace: string };
+type CsvViewMode = "table" | "text";
+type CsvGridRow = Record<string, string> & { __rowId: string };
+type CsvTable = {
+  keys: string[];
+  headers: string[];
+  rows: CsvGridRow[];
+  delimiter: string;
+};
+type SearchMatch = { path: string; line: number; text: string };
+type SearchFocus = { path: string; line: number; query: string };
 
 const allKinds: FileKind[] = ["md", "json", "text", "csv"];
 const labels: Record<FileKind, string> = {
@@ -69,6 +104,144 @@ const defaultAppearance: Appearance = {
 };
 const textTypeSettingsKey = "better-md.text-type-settings";
 const defaultTextTypeSettings: TextTypeSettings = { markdownView: "split" };
+
+function findNodeByPath(nodes: Node[], path: string): Node | undefined {
+  for (const node of nodes) {
+    if (node.path === path) return node;
+    const child = node.children && findNodeByPath(node.children, path);
+    if (child) return child;
+  }
+  return undefined;
+}
+
+function lineRange(text: string, line: number) {
+  let start = 0;
+  for (let index = 1; index < line; index += 1) {
+    const nextBreak = text.indexOf("\n", start);
+    if (nextBreak < 0) return { start: text.length, end: text.length };
+    start = nextBreak + 1;
+  }
+  const nextBreak = text.indexOf("\n", start);
+  return { start, end: nextBreak < 0 ? text.length : nextBreak };
+}
+
+const rainbowBracketColors = [
+  "#6fa8ff",
+  "#f0b778",
+  "#a9d47d",
+  "#d799d8",
+  "#78cbd0",
+  "#e6d77a",
+];
+const rainbowBracketTheme = EditorView.baseTheme(
+  Object.fromEntries(
+    rainbowBracketColors.map((color, index) => [
+      `.cm-rainbow-bracket-${index}`,
+      { color, fontWeight: "700" },
+    ]),
+  ),
+);
+const rainbowBrackets = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.decorations = this.buildDecorations(view);
+    }
+
+    update(update: { docChanged: boolean; view: EditorView }) {
+      if (update.docChanged) this.decorations = this.buildDecorations(update.view);
+    }
+
+    private buildDecorations(view: EditorView) {
+      const stack: { bracket: string; position: number }[] = [];
+      const ranges: { from: number; to: number; depth: number }[] = [];
+      const text = view.state.doc.toString();
+      let inString = false;
+      let escaped = false;
+
+      for (let position = 0; position < text.length; position += 1) {
+        const character = text[position];
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (character === "\\") escaped = true;
+          else if (character === '"') inString = false;
+          continue;
+        }
+        if (character === '"') {
+          inString = true;
+          continue;
+        }
+        if (character === "{" || character === "[") {
+          stack.push({ bracket: character, position });
+          continue;
+        }
+        const expectedOpening = character === "}" ? "{" : character === "]" ? "[" : undefined;
+        if (!expectedOpening) continue;
+        const opening = stack.at(-1);
+        if (!opening || opening.bracket !== expectedOpening) continue;
+        stack.pop();
+        const depth = stack.length % rainbowBracketColors.length;
+        ranges.push({ from: opening.position, to: opening.position + 1, depth });
+        ranges.push({ from: position, to: position + 1, depth });
+      }
+
+      const builder = new RangeSetBuilder<Decoration>();
+      ranges
+        .sort((left, right) => left.from - right.from)
+        .forEach((range) =>
+          builder.add(
+            range.from,
+            range.to,
+            Decoration.mark({ class: `cm-rainbow-bracket-${range.depth}` }),
+          ),
+        );
+      return builder.finish();
+    }
+  },
+  { decorations: (plugin) => plugin.decorations },
+);
+const jsonEditorExtensions = [
+  json(),
+  bracketMatching(),
+  rainbowBracketTheme,
+  rainbowBrackets,
+];
+const csvGridTheme = themeQuartz
+  .withPart(colorSchemeDark)
+  .withParams({
+    accentColor: "#5792ff",
+    fontFamily: "Inter, Microsoft YaHei, sans-serif",
+    borderRadius: 8,
+  });
+
+function parseCsvTable(text: string, hasHeader: boolean): CsvTable {
+  const parsed = Papa.parse<string[]>(text, {
+    skipEmptyLines: false,
+  });
+  const sourceRows = parsed.data.map((row) => row.map((cell) => cell ?? ""));
+  while (sourceRows.length && sourceRows.at(-1)?.every((cell) => !cell)) {
+    sourceRows.pop();
+  }
+  const width = Math.max(1, ...sourceRows.map((row) => row.length));
+  const firstRow = hasHeader ? sourceRows.shift() ?? [] : [];
+  const keys = Array.from({ length: width }, (_, index) => `column_${index}`);
+  const headers = keys.map(
+    (_, index) => firstRow[index]?.trim() || `列 ${index + 1}`,
+  );
+  const rows = sourceRows.map((row, index) =>
+    Object.fromEntries([
+      ["__rowId", `row-${index}`],
+      ...keys.map((key, column) => [key, row[column] ?? ""]),
+    ]),
+  ) as CsvGridRow[];
+  return {
+    keys,
+    headers,
+    rows,
+    delimiter: parsed.meta.delimiter || ",",
+  };
+}
 
 function runningInTauri() {
   return Boolean(
@@ -243,6 +416,7 @@ function WindowChrome({
 }
 
 function App() {
+  const [maximized, setMaximized] = useState(false);
   const launchParameters = useMemo(
     () => new URLSearchParams(window.location.search),
     [],
@@ -266,6 +440,7 @@ function App() {
     ...initialShortcuts,
     ...JSON.parse(localStorage.getItem(storageKey) || "{}"),
   }));
+  const [recordingShortcut, setRecordingShortcut] = useState<keyof Shortcut>();
   const [settings, setSettings] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [recentMenuOpen, setRecentMenuOpen] = useState(false);
@@ -309,10 +484,20 @@ function App() {
   );
   const [search, setSearch] = useState<"file" | "project" | null>(null);
   const [query, setQuery] = useState("");
-  const [matches, setMatches] = useState<
-    { path: string; line: number; text: string }[]
-  >([]);
+  const [matches, setMatches] = useState<SearchMatch[]>([]);
+  const [pendingSearchFocus, setPendingSearchFocus] = useState<SearchFocus>();
+  const [csvSearchCell, setCsvSearchCell] = useState<{
+    rowId: string;
+    key: string;
+  }>();
   const [error, setError] = useState<string>();
+  const [jsonToolMessage, setJsonToolMessage] = useState<string>();
+  const [csvViewMode, setCsvViewMode] = useState<CsvViewMode>("table");
+  const [csvHasHeader, setCsvHasHeader] = useState(true);
+  const [csvToolMessage, setCsvToolMessage] = useState<string>();
+  const csvGridRef = useRef<AgGridReact<CsvGridRow>>(null);
+  const plainTextEditorRef = useRef<HTMLTextAreaElement>(null);
+  const jsonEditorRef = useRef<ReactCodeMirrorRef>(null);
   const pendingUpdate = useRef<Awaited<ReturnType<typeof check>>>(null);
   const [updateStatus, setUpdateStatus] = useState<
     "idle" | "checking" | "available" | "current" | "installing" | "error"
@@ -335,6 +520,19 @@ function App() {
     void rescan();
   }, [rescan]);
   useEffect(() => {
+    if (!runningInTauri()) return;
+    const appWindow = getCurrentWindow();
+    let unlisten: (() => void) | undefined;
+    const syncMaximized = () => {
+      void appWindow.isMaximized().then(setMaximized);
+    };
+    syncMaximized();
+    void appWindow.onResized(syncMaximized).then((stop) => {
+      unlisten = stop;
+    });
+    return () => unlisten?.();
+  }, []);
+  useEffect(() => {
     if (root || !runningInTauri() || didHandleAssociatedFile.current) return;
     didHandleAssociatedFile.current = true;
     void invoke<StartupFile | null>("startup_file").then((file) => {
@@ -354,6 +552,9 @@ function App() {
     localStorage.setItem(textTypeSettingsKey, JSON.stringify(textTypeSettings));
   }, [textTypeSettings]);
   useEffect(() => {
+    if (!settings) setRecordingShortcut(undefined);
+  }, [settings]);
+  useEffect(() => {
     const closeMenuOnOutsidePress = (event: MouseEvent) => {
       const target = event.target as Element;
       if (menuOpen && !target.closest(".main-menu, .chrome-menu")) closeMenu();
@@ -364,6 +565,26 @@ function App() {
   }, [menuOpen]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (recordingShortcut) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === "Escape") {
+          setRecordingShortcut(undefined);
+          return;
+        }
+        if (event.key === "Backspace" || event.key === "Delete") {
+          setShortcuts((value) => ({ ...value, [recordingShortcut]: "" }));
+          setRecordingShortcut(undefined);
+          return;
+        }
+        if (["Control", "Shift", "Alt", "Meta"].includes(event.key)) return;
+        const recorded = normaliseKey(event);
+        const isFunctionKey = /^F\d{1,2}$/.test(recorded);
+        if (!isFunctionKey && !event.ctrlKey && !event.metaKey && !event.altKey) return;
+        setShortcuts((value) => ({ ...value, [recordingShortcut]: recorded }));
+        setRecordingShortcut(undefined);
+        return;
+      }
       const key = normaliseKey(event);
       if (current && key === "Ctrl+Z" && historyIndex > 0) {
         event.preventDefault();
@@ -396,7 +617,7 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [shortcuts, current, history, historyIndex]);
+  }, [shortcuts, current, history, historyIndex, recordingShortcut]);
   useEffect(() => {
     const openWorkspaceFileLink = (event: MouseEvent) => {
       const anchor = (event.target as Element).closest(
@@ -457,6 +678,7 @@ function App() {
         minHeight: 600,
         decorations: false,
         shadow: false,
+        transparent: true,
       });
       editor.once("tauri://created", () => {
         void getCurrentWindow().close();
@@ -494,9 +716,21 @@ function App() {
     });
   const openFile = async (node: Node, recordFileHistory = true) => {
     try {
-      const fileContent = await invoke<string>("read_text_file", {
+      let fileContent = await invoke<string>("read_text_file", {
         path: node.path,
       });
+      if (node.extension === "json") {
+        try {
+          fileContent = JSON.stringify(JSON.parse(fileContent), null, 2);
+        } catch {
+          // Keep invalid JSON untouched so the editor can help repair it.
+        }
+      }
+      if (node.extension === "csv") {
+        setCsvViewMode("table");
+        setCsvHasHeader(true);
+        setCsvToolMessage(undefined);
+      }
       setCurrent(node);
       setContent(fileContent);
       setHistory([fileContent]);
@@ -575,9 +809,170 @@ function App() {
         }),
       );
   };
+  const focusSearchMatch = (match: SearchMatch) => {
+    const target = match.path ? findNodeByPath(tree, match.path) : current;
+    if (!target) {
+      setError("找不到该搜索结果对应的文件。请重新扫描项目后再试。");
+      return;
+    }
+    setPendingSearchFocus({ path: target.path, line: match.line, query });
+    setSearch(null);
+    if (target.path !== current?.path) void openFile(target);
+  };
+  const transformJson = (
+    action: "format" | "minify" | "escape" | "unescape" | "validate",
+  ) => {
+    try {
+      let next = content;
+      if (action === "format") next = JSON.stringify(JSON.parse(content), null, 2);
+      if (action === "minify") next = JSON.stringify(JSON.parse(content));
+      if (action === "escape") next = JSON.stringify(content).slice(1, -1);
+      if (action === "unescape") {
+        next = JSON.parse(`"${content}"`) as string;
+      }
+      if (action === "validate") {
+        JSON.parse(content);
+        setJsonToolMessage("JSON 格式有效");
+        return;
+      }
+      updateContent(next);
+      setJsonToolMessage(
+        action === "format"
+          ? "已格式化"
+          : action === "minify"
+            ? "已压缩"
+            : action === "escape"
+              ? "已转义"
+              : "已去转义",
+      );
+    } catch (reason) {
+      setJsonToolMessage(undefined);
+      setError(`JSON 操作失败：${String(reason)}`);
+    }
+  };
+  const isCsv = current?.extension === "csv";
+  const csvTable = useMemo(
+    () => (isCsv ? parseCsvTable(content, csvHasHeader) : undefined),
+    [content, csvHasHeader, isCsv],
+  );
+  const writeCsv = (table: CsvTable, rows = table.rows, header = csvHasHeader) => {
+    const output = rows.map((row) => table.keys.map((key) => row[key] ?? ""));
+    updateContent(Papa.unparse(header ? [table.headers, ...output] : output));
+  };
+  const addCsvRow = () => {
+    if (!csvTable) return;
+    const row = Object.fromEntries([
+      ["__rowId", `row-${Date.now()}`],
+      ...csvTable.keys.map((key) => [key, ""]),
+    ]) as CsvGridRow;
+    writeCsv(csvTable, [...csvTable.rows, row]);
+    setCsvToolMessage("已添加空白行");
+  };
+  const deleteSelectedCsvRows = () => {
+    if (!csvTable) return;
+    const selected = csvGridRef.current?.api.getSelectedRows() ?? [];
+    if (!selected.length) {
+      setCsvToolMessage("请先选择要删除的行");
+      return;
+    }
+    const selectedIds = new Set(selected.map((row) => row.__rowId));
+    writeCsv(csvTable, csvTable.rows.filter((row) => !selectedIds.has(row.__rowId)));
+    setCsvToolMessage(`已删除 ${selected.length} 行`);
+  };
+  const formatCsv = () => {
+    if (!csvTable) return;
+    writeCsv(csvTable);
+    setCsvToolMessage(`已规范化（${csvTable.delimiter === "\t" ? "Tab" : csvTable.delimiter} 分隔）`);
+  };
   const shownKinds = useMemo(() => [...kinds], [kinds]);
 
   const isMarkdown = current?.extension === "md";
+  const isJson = current?.extension === "json";
+  const csvColumns = useMemo<ColDef<CsvGridRow>[]>(
+    () =>
+      csvTable
+        ? csvTable.keys.map((key, index) => ({
+            field: key,
+            headerName: csvTable.headers[index],
+            editable: true,
+            sortable: true,
+            filter: true,
+            resizable: true,
+            minWidth: 120,
+            flex: 1,
+            cellClassRules: {
+              "csv-search-hit": (params) =>
+                csvSearchCell?.rowId === params.data?.__rowId &&
+                csvSearchCell?.key === key,
+            },
+          }))
+        : [],
+    [csvSearchCell, csvTable],
+  );
+  useEffect(() => {
+    if (!pendingSearchFocus || current?.path !== pendingSearchFocus.path) return;
+    const { start, end } = lineRange(content, pendingSearchFocus.line);
+    const lineText = content.slice(start, end).replace(/\r$/, "");
+    const matchOffset = lineText.toLocaleLowerCase().indexOf(
+      pendingSearchFocus.query.toLocaleLowerCase(),
+    );
+    const from = start + Math.max(0, matchOffset);
+    const to = from + Math.max(1, pendingSearchFocus.query.length);
+
+    if (current?.extension === "csv" && csvViewMode === "table") {
+      const rowIndex = pendingSearchFocus.line - (csvHasHeader ? 2 : 1);
+      const row = csvTable?.rows[rowIndex];
+      const key = row
+        ? csvTable?.keys.find((column) =>
+            row[column]
+              ?.toLocaleLowerCase()
+              .includes(pendingSearchFocus.query.toLocaleLowerCase()),
+          )
+        : undefined;
+      if (row && key) {
+        setCsvSearchCell({ rowId: row.__rowId, key });
+        requestAnimationFrame(() => {
+          const api = csvGridRef.current?.api;
+          api?.ensureIndexVisible(rowIndex, "middle");
+          api?.ensureColumnVisible(key, "middle");
+          api?.setFocusedCell(rowIndex, key);
+        });
+      } else {
+        setCsvToolMessage(
+          rowIndex < 0 ? "命中表头，已保留搜索结果" : "未能定位到对应单元格",
+        );
+      }
+    } else {
+      setCsvSearchCell(undefined);
+      if (current?.extension === "md" && viewMode === "preview") {
+        setViewMode("split");
+      }
+      requestAnimationFrame(() => {
+        if (current?.extension === "json") {
+          const view = jsonEditorRef.current?.view;
+          view?.dispatch({
+            selection: { anchor: from, head: to },
+            effects: EditorView.scrollIntoView(from, { y: "center" }),
+          });
+          view?.focus();
+        } else {
+          const editor = plainTextEditorRef.current;
+          editor?.focus();
+          editor?.setSelectionRange(from, to);
+        }
+      });
+    }
+    setPendingSearchFocus(undefined);
+  }, [
+    content,
+    csvHasHeader,
+    csvTable,
+    csvViewMode,
+    current?.extension,
+    current?.path,
+    pendingSearchFocus,
+    viewMode,
+  ]);
   const modeLabels: Record<ViewMode, string> = {
     text: "纯文本",
     split: "对比预览",
@@ -623,7 +1018,7 @@ function App() {
 
   return (
     <div
-      className="app-shell"
+      className={`app-shell ${maximized ? "window-maximized" : ""}`}
       data-theme={appearance.theme}
       style={
         {
@@ -704,42 +1099,46 @@ function App() {
               </strong>
               <span className="spacer" />
               <span className="sidebar-tools">
-                <button
-                  className="icon-button history-button"
-                  title="后退到上一个打开的文件"
-                  aria-label="后退到上一个打开的文件"
-                  disabled={fileHistoryIndex <= 0}
-                  onClick={() => navigateFileHistory(-1)}
-                >
-                  ←
-                </button>
-                <button
-                  className="icon-button history-button"
-                  title="前进到下一个打开的文件"
-                  aria-label="前进到下一个打开的文件"
-                  disabled={fileHistoryIndex >= fileHistory.length - 1}
-                  onClick={() => navigateFileHistory(1)}
-                >
-                  →
-                </button>
-                <button
-                  className="icon-button"
-                  title="筛选显示的文件类型"
-                  aria-label="筛选显示的文件类型"
-                  aria-expanded={filtersOpen}
-                  onClick={() => setFiltersOpen((open) => !open)}
-                >
-                  ☷
-                </button>
-                <button
-                  className="icon-button"
-                  title="定位当前编辑的文件"
-                  aria-label="定位当前编辑的文件"
-                  disabled={!current}
-                  onClick={locateCurrent}
-                >
-                  ◎
-                </button>
+                <span className="sidebar-tool-group">
+                  <button
+                    className="icon-button history-button"
+                    title="后退到上一个打开的文件"
+                    aria-label="后退到上一个打开的文件"
+                    disabled={fileHistoryIndex <= 0}
+                    onClick={() => navigateFileHistory(-1)}
+                  >
+                    <ChevronLeft size={16} strokeWidth={2.2} />
+                  </button>
+                  <button
+                    className="icon-button history-button"
+                    title="前进到下一个打开的文件"
+                    aria-label="前进到下一个打开的文件"
+                    disabled={fileHistoryIndex >= fileHistory.length - 1}
+                    onClick={() => navigateFileHistory(1)}
+                  >
+                    <ChevronRight size={16} strokeWidth={2.2} />
+                  </button>
+                </span>
+                <span className="sidebar-tool-group">
+                  <button
+                    className="icon-button"
+                    title="筛选显示的文件类型"
+                    aria-label="筛选显示的文件类型"
+                    aria-expanded={filtersOpen}
+                    onClick={() => setFiltersOpen((open) => !open)}
+                  >
+                    <ListFilter size={15} strokeWidth={2} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    title="定位当前编辑的文件"
+                    aria-label="定位当前编辑的文件"
+                    disabled={!current}
+                    onClick={locateCurrent}
+                  >
+                    <LocateFixed size={15} strokeWidth={2} />
+                  </button>
+                </span>
               </span>
             </header>
             {filtersOpen && (
@@ -782,7 +1181,11 @@ function App() {
               aria-label={sidebarCollapsed ? "展开文件栏" : "收纳文件栏"}
               onClick={() => setSidebarCollapsed((value) => !value)}
             >
-              {sidebarCollapsed ? "›" : "‹"}
+              {sidebarCollapsed ? (
+                <PanelLeftOpen size={15} strokeWidth={2} />
+              ) : (
+                <PanelLeftClose size={15} strokeWidth={2} />
+              )}
             </button>
           </aside>
         )}
@@ -860,6 +1263,48 @@ function App() {
               <header>
                 <span>{current?.path ?? "未打开文件"}</span>
                 <span className="spacer" />
+                {isJson && (
+                  <div className="json-tools" aria-label="JSON 工具">
+                    <button title="格式化 JSON" onClick={() => transformJson("format")}>格式化</button>
+                    <button title="压缩 JSON" onClick={() => transformJson("minify")}>压缩</button>
+                    <button title="转义 JSON 文本" onClick={() => transformJson("escape")}>转义</button>
+                    <button title="去转义 JSON 文本" onClick={() => transformJson("unescape")}>去转义</button>
+                    <button title="校验 JSON 格式" onClick={() => transformJson("validate")}>校验</button>
+                    {jsonToolMessage && <span>{jsonToolMessage}</span>}
+                  </div>
+                )}
+                {isCsv && (
+                  <div className="csv-tools" aria-label="CSV 工具">
+                    <div className="csv-view-toggle">
+                      <button
+                        className={csvViewMode === "table" ? "selected" : ""}
+                        onClick={() => setCsvViewMode("table")}
+                      >
+                        表格
+                      </button>
+                      <button
+                        className={csvViewMode === "text" ? "selected" : ""}
+                        onClick={() => setCsvViewMode("text")}
+                      >
+                        原始文本
+                      </button>
+                    </div>
+                    <button onClick={formatCsv}>规范化</button>
+                    <button
+                      className={csvHasHeader ? "selected" : ""}
+                      onClick={() => setCsvHasHeader((value) => !value)}
+                    >
+                      首行表头
+                    </button>
+                    {csvViewMode === "table" && (
+                      <>
+                        <button onClick={addCsvRow}>添加行</button>
+                        <button onClick={deleteSelectedCsvRows}>删除选中行</button>
+                      </>
+                    )}
+                    {csvToolMessage && <span>{csvToolMessage}</span>}
+                  </div>
+                )}
                 {isMarkdown && (
                   <div className="view-modes" aria-label="Markdown 视图模式">
                     {(["text", "split", "preview"] as ViewMode[]).map(
@@ -884,26 +1329,78 @@ function App() {
                   ⚙ 设置
                 </button>
               </header>
-              <div
-                className={`document-view ${isMarkdown ? `markdown-${viewMode}` : "plain-text"}`}
-              >
-                {(!isMarkdown || viewMode !== "preview") && (
-                  <textarea
-                    aria-label="文件编辑器"
+              {!current ? (
+                <div className="editor-empty-state">
+                  <div className="editor-empty-icon">
+                    <FileText size={28} strokeWidth={1.65} />
+                  </div>
+                  <h2>还没有打开文件</h2>
+                  <p>从左侧项目栏选择一个文件，开始阅读或编辑。</p>
+                  <div className="editor-empty-formats">
+                    <span>Markdown</span>
+                    <span>JSON</span>
+                    <span>Text</span>
+                    <span>CSV</span>
+                  </div>
+                </div>
+              ) : isJson ? (
+                <div className="json-editor-shell">
+                  <CodeMirror
+                    ref={jsonEditorRef}
                     value={content}
-                    onChange={(e) => updateContent(e.target.value)}
-                    placeholder="从左侧打开文件"
-                    disabled={!current}
+                    height="100%"
+                    theme={oneDark}
+                    extensions={jsonEditorExtensions}
+                    onChange={(value) => {
+                      updateContent(value);
+                      setJsonToolMessage(undefined);
+                    }}
+                    basicSetup={{ lineNumbers: true, foldGutter: true }}
                   />
-                )}
-                {isMarkdown && viewMode !== "text" && (
-                  <article className="markdown-preview">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {content}
-                    </ReactMarkdown>
-                  </article>
-                )}
-              </div>
+                </div>
+              ) : isCsv && csvViewMode === "table" && csvTable ? (
+                <div className="csv-editor-shell">
+                  <AgGridReact<CsvGridRow>
+                    ref={csvGridRef}
+                    theme={csvGridTheme}
+                    modules={[AllCommunityModule]}
+                    rowData={csvTable.rows}
+                    columnDefs={csvColumns}
+                    getRowId={(params) => params.data.__rowId}
+                    rowSelection={{ mode: "multiRow" }}
+                    defaultColDef={{ editable: true, sortable: true, resizable: true }}
+                    onCellValueChanged={(event) => {
+                      const rows: CsvGridRow[] = [];
+                      event.api.forEachNode((node) => {
+                        if (node.data) rows.push(node.data);
+                      });
+                      writeCsv(csvTable, rows);
+                      setCsvToolMessage(undefined);
+                    }}
+                  />
+                </div>
+              ) : (
+                <div
+                  className={`document-view ${isMarkdown ? `markdown-${viewMode}` : "plain-text"}`}
+                >
+                  {(!isMarkdown || viewMode !== "preview") && (
+                    <textarea
+                      ref={plainTextEditorRef}
+                      aria-label="文件编辑器"
+                      value={content}
+                      onChange={(e) => updateContent(e.target.value)}
+                      placeholder="从左侧打开文件"
+                    />
+                  )}
+                  {isMarkdown && viewMode !== "text" && (
+                    <article className="markdown-preview">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {content}
+                      </ReactMarkdown>
+                    </article>
+                  )}
+                </div>
+              )}
             </>
           )}
         </section>
@@ -1223,27 +1720,35 @@ function App() {
                   <div className="settings-panel">
                     <section>
                       <h3>搜索当前文件</h3>
-                      <p>在当前正在编辑的文件中搜索。</p>
-                      <input
-                        value={shortcuts.find}
-                        onChange={(e) =>
-                          setShortcuts((x) => ({ ...x, find: e.target.value }))
-                        }
-                      />
+                      <p>在当前正在编辑的文件中搜索。点击快捷键后直接按下组合键。</p>
+                      <button
+                        type="button"
+                        className={`shortcut-recorder ${recordingShortcut === "find" ? "is-recording" : ""}`}
+                        aria-pressed={recordingShortcut === "find"}
+                        onClick={() => setRecordingShortcut("find")}
+                      >
+                        {recordingShortcut === "find"
+                          ? "请按下快捷键…"
+                          : shortcuts.find || "未设置"}
+                      </button>
                     </section>
                     <section>
                       <h3>搜索当前项目</h3>
-                      <p>仅搜索文件栏中当前已勾选的文件类型。</p>
-                      <input
-                        value={shortcuts.projectFind}
-                        onChange={(e) =>
-                          setShortcuts((x) => ({
-                            ...x,
-                            projectFind: e.target.value,
-                          }))
-                        }
-                      />
+                      <p>仅搜索文件栏中当前已勾选的文件类型。点击后直接录制组合键。</p>
+                      <button
+                        type="button"
+                        className={`shortcut-recorder ${recordingShortcut === "projectFind" ? "is-recording" : ""}`}
+                        aria-pressed={recordingShortcut === "projectFind"}
+                        onClick={() => setRecordingShortcut("projectFind")}
+                      >
+                        {recordingShortcut === "projectFind"
+                          ? "请按下快捷键…"
+                          : shortcuts.projectFind || "未设置"}
+                      </button>
                     </section>
+                    <p className="shortcut-recorder-hint">
+                      支持 Ctrl / Shift / Alt 组合与功能键。按 Esc 取消；按 Backspace 或 Delete 清空。
+                    </p>
                   </div>
                 )}
               </div>
@@ -1265,7 +1770,7 @@ function App() {
                 <button
                   className="result"
                   key={`${match.path}:${match.line}`}
-                  onClick={() => setSearch(null)}
+                  onClick={() => focusSearchMatch(match)}
                 >
                   <b>
                     {match.path
