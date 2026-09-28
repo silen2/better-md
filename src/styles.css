@@ -1863,3 +1863,239 @@ textarea::-webkit-scrollbar-thumb:hover,
 .document-view textarea {
   line-height: var(--editor-line-height, 1.65);
 }
+
+/* Modern form layer: familiar Element-style sizing, focus rings and hierarchy. */
+.modal {
+  padding: 24px;
+  background: rgb(7 10 16 / 68%);
+  backdrop-filter: blur(7px);
+}
+.settings-dialog {
+  width: min(840px, calc(100vw - 48px));
+  height: min(600px, calc(100vh - 48px));
+  min-height: 460px;
+  border: 1px solid #465268;
+  border-radius: 14px;
+  background: #20252f;
+  box-shadow: 0 28px 90px rgb(0 0 0 / 58%), 0 0 0 1px rgb(255 255 255 / 3%) inset;
+}
+.settings-dialog nav {
+  width: 196px;
+  flex-basis: 196px;
+  padding: 14px 9px;
+  border-right-color: #384251;
+  background: linear-gradient(180deg, #1b2029 0%, #181d25 100%);
+}
+.settings-brand {
+  gap: 10px;
+  padding: 8px 10px 22px;
+  color: #f3f6fc;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.settings-brand img {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  box-shadow: 0 3px 10px rgb(0 0 0 / 28%);
+}
+.settings-dialog nav button,
+.settings-dialog nav .text-types-toggle {
+  min-height: 34px;
+  margin-bottom: 2px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  color: #a9b4c5;
+  font-size: 12px;
+  font-weight: 520;
+  transition: background 140ms ease, color 140ms ease, transform 140ms ease;
+}
+.settings-dialog nav button:hover,
+.settings-dialog nav .text-types-toggle:hover {
+  background: #2a3240;
+  color: #f1f5fc;
+}
+.settings-dialog nav button.active,
+.settings-dialog nav .text-types-toggle.active {
+  background: linear-gradient(90deg, #315dba 0%, #2d4f92 100%);
+  color: #fff;
+  box-shadow: 0 3px 9px rgb(29 73 151 / 24%);
+}
+.settings-dialog nav button.active span,
+.settings-dialog nav .text-types-toggle.active span {
+  color: #dbe9ff;
+}
+.settings-dialog nav .text-type-submenu {
+  margin: 2px 0 6px 18px;
+  padding-left: 7px;
+  border-left: 1px solid #3b4658;
+}
+.settings-dialog nav .text-type-submenu button {
+  min-height: 30px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+.settings-content {
+  background: #222832;
+}
+.settings-content > header {
+  min-height: 88px;
+  padding: 20px 24px 17px;
+  border-bottom: 1px solid #384251;
+  background: linear-gradient(180deg, #282f3b 0%, #242a34 100%);
+}
+.settings-content .eyebrow {
+  color: #7aa5ff;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+}
+.settings-content h2 {
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+}
+.settings-content > header .close-button {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  color: #abb7ca;
+  font-size: 21px;
+  transition: background 140ms ease, color 140ms ease;
+}
+.settings-content > header .close-button:hover {
+  background: #394354;
+  color: #fff;
+}
+.settings-panel {
+  gap: 14px;
+  padding: 20px 24px 26px;
+  background: #222832;
+}
+.settings-panel section {
+  position: relative;
+  padding: 17px 18px;
+  border: 1px solid #3b4657;
+  border-radius: 11px;
+  background: linear-gradient(145deg, #2a313d 0%, #262d38 100%);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 12%), 0 1px 0 rgb(255 255 255 / 3%) inset;
+}
+.settings-panel h3 {
+  margin-bottom: 6px;
+  color: #f3f6fb;
+  font-size: 14px;
+  font-weight: 620;
+}
+.settings-panel p {
+  max-width: 570px;
+  margin-bottom: 15px;
+  color: #9daabd;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.settings-panel section > button {
+  min-height: 32px;
+  padding: 7px 13px;
+  border: 1px solid #4e87f2;
+  border-radius: 7px;
+  background: linear-gradient(180deg, #4d8cf5 0%, #3f76d5 100%);
+  box-shadow: 0 2px 7px rgb(31 93 193 / 28%);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 560;
+  transition: filter 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+.settings-panel section > button:hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow: 0 4px 11px rgb(31 93 193 / 38%);
+  transform: translateY(-1px);
+}
+.settings-panel section > button:active:not(:disabled) {
+  transform: translateY(0);
+}
+.settings-panel section > button:disabled {
+  border-color: #465160;
+  background: #39424f;
+  box-shadow: none;
+  color: #7f8b9c;
+}
+.settings-panel label {
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 12px;
+  color: #c4cfdf;
+  font-size: 12px;
+  font-weight: 520;
+}
+.settings-panel label input,
+.settings-panel label select,
+.settings-panel input {
+  height: 34px;
+  padding: 6px 10px;
+  border: 1px solid #4b5769;
+  border-radius: 7px;
+  outline: none;
+  background: #1c222c;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 18%) inset;
+  color: #e7edf7;
+  font-family: var(--editor-font), "JetBrains Mono", Consolas, monospace;
+  font-size: 12px;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+.settings-panel label select {
+  max-width: 240px;
+  cursor: pointer;
+}
+.settings-panel label input:hover,
+.settings-panel label select:hover {
+  border-color: #66748a;
+  background: #202733;
+}
+.settings-panel label input:focus,
+.settings-panel label select:focus {
+  border-color: #5b96ff;
+  box-shadow: 0 0 0 3px rgb(80 142 255 / 19%);
+}
+.settings-panel .theme-options {
+  gap: 8px;
+  padding: 4px;
+  border: 1px solid #414d5f;
+  border-radius: 9px;
+  background: #1d232d;
+}
+.settings-panel .theme-options button {
+  min-height: 31px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #aeb9c9;
+  font-size: 12px;
+  font-weight: 540;
+  transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+.settings-panel .theme-options button:hover {
+  background: #303a49;
+  color: #f3f6fc;
+}
+.settings-panel .theme-options button.selected {
+  border-color: #528bf1;
+  background: #315fae;
+  box-shadow: 0 2px 6px rgb(25 77 165 / 32%);
+  color: #fff;
+}
+.setting-value {
+  padding: 6px 10px;
+  border: 1px solid #3c62a1;
+  border-radius: 6px;
+  background: #253e68;
+  color: #cbdcff;
+  font-size: 12px;
+}
+.settings-dialog button:focus-visible,
+.settings-panel input:focus-visible,
+.settings-panel select:focus-visible {
+  outline: 2px solid #76a9ff;
+  outline-offset: 2px;
+}
