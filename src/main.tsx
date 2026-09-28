@@ -165,67 +165,6 @@ function Tree({
   );
 }
 
-function JsonValue({ value, depth = 0 }: { value: unknown; depth?: number }) {
-  const color = `var(--json-pair-${depth % 6})`;
-  if (Array.isArray(value)) {
-    return (
-      <details className="json-node" open>
-        <summary>
-          <span className="json-bracket" style={{ color }}>
-            [
-          </span>
-          <span className="json-hint">{value.length} 项</span>
-        </summary>
-        <div className="json-children">
-          {value.map((child, index) => (
-            <div className="json-row" key={index}>
-              <JsonValue value={child} depth={depth + 1} />
-              {index < value.length - 1 && (
-                <span className="json-comma">,</span>
-              )}
-            </div>
-          ))}
-        </div>
-        <span className="json-bracket json-closing" style={{ color }}>
-          ]
-        </span>
-      </details>
-    );
-  }
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
-    return (
-      <details className="json-node" open>
-        <summary>
-          <span className="json-bracket" style={{ color }}>
-            {"{"}
-          </span>
-          <span className="json-hint">{entries.length} 项</span>
-        </summary>
-        <div className="json-children">
-          {entries.map(([key, child], index) => (
-            <div className="json-row" key={key}>
-              <span className="json-key">{JSON.stringify(key)}: </span>
-              <JsonValue value={child} depth={depth + 1} />
-              {index < entries.length - 1 && (
-                <span className="json-comma">,</span>
-              )}
-            </div>
-          ))}
-        </div>
-        <span className="json-bracket json-closing" style={{ color }}>
-          {"}"}
-        </span>
-      </details>
-    );
-  }
-  return (
-    <span className={`json-value ${value === null ? "null" : typeof value}`}>
-      {JSON.stringify(value)}
-    </span>
-  );
-}
-
 function WindowChrome({
   menuOpen,
   onMenu,
@@ -639,17 +578,6 @@ function App() {
   const shownKinds = useMemo(() => [...kinds], [kinds]);
 
   const isMarkdown = current?.extension === "md";
-  const isJson = current?.extension === "json";
-  const parsedJson = useMemo(() => {
-    if (!isJson) return undefined;
-    try {
-      return { value: JSON.parse(content) as unknown };
-    } catch (error) {
-      return {
-        error: error instanceof Error ? error.message : "JSON 格式无效",
-      };
-    }
-  }, [content, isJson]);
   const modeLabels: Record<ViewMode, string> = {
     text: "纯文本",
     split: "对比预览",
@@ -957,7 +885,7 @@ function App() {
                 </button>
               </header>
               <div
-                className={`document-view ${isMarkdown ? `markdown-${viewMode}` : isJson ? "json-split" : "plain-text"}`}
+                className={`document-view ${isMarkdown ? `markdown-${viewMode}` : "plain-text"}`}
               >
                 {(!isMarkdown || viewMode !== "preview") && (
                   <textarea
@@ -974,15 +902,6 @@ function App() {
                       {content}
                     </ReactMarkdown>
                   </article>
-                )}
-                {isJson && (
-                  <aside className="json-preview">
-                    {parsedJson?.error ? (
-                      <p className="json-error">{parsedJson.error}</p>
-                    ) : (
-                      <JsonValue value={parsedJson?.value} />
-                    )}
-                  </aside>
                 )}
               </div>
             </>
