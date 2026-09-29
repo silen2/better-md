@@ -2844,3 +2844,27 @@ body {
 .json-editor-shell .cm-content ::selection {
   background: rgb(79 132 220 / 34%) !important;
 }
+
+/* Typography preferences apply to every editable surface. */
+.document-view textarea {
+  line-height: var(--editor-line-height, 1.65) !important;
+}
+.json-editor-shell .cm-editor,
+.json-editor-shell .cm-scroller,
+.json-editor-shell .cm-content {
+  font-family: var(--editor-font), "JetBrains Mono", "DM Mono", Consolas, monospace !important;
+  font-size: var(--editor-font-size, 13px) !important;
+  line-height: var(--editor-line-height, 1.65) !important;
+}
+.csv-editor-shell .ag-root-wrapper,
+.csv-editor-shell .ag-root,
+.csv-editor-shell .ag-cell,
+.csv-editor-shell .ag-header-cell {
+  font-family: var(--editor-font), "JetBrains Mono", "DM Mono", Consolas, monospace !important;
+}
+.csv-editor-shell .ag-cell {
+  font-size: var(--editor-font-size, 13px) !important;
+}
+.csv-editor-shell .ag-header-cell {
+  font-size: calc(var(--editor-font-size, 13px) * 0.92) !important;
+}

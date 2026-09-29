@@ -6,11 +6,6 @@ import React, {
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
-import { open } from "@tauri-apps/plugin-dialog";
-import { invoke } from "@tauri-apps/api/core";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { check } from "@tauri-apps/plugin-updater";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { json } from "@codemirror/lang-json";
 import { bracketMatching } from "@codemirror/language";
@@ -29,101 +24,74 @@ import {
   themeQuartz,
   type ColDef,
 } from "ag-grid-community";
-import Papa from "papaparse";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  Braces,
-  ChevronLeft,
-  ChevronRight,
   FileText,
-  Folder,
-  Keyboard,
-  ListFilter,
-  LocateFixed,
-  Menu,
-  Palette,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Settings,
-  SlidersHorizontal,
-  Table2,
-  Type,
 } from "lucide-react";
-import appIcon from "./assets/bettermd-icon.png";
+import {
+  allFileKinds as allKinds,
+  expandedPathsForFile,
+  findNodeByPath,
+  lineRange,
+  resolveWorkspaceLink,
+  supportedFileKind,
+} from "./domain/document";
+import { parseCsvTable, serializeCsv } from "./domain/csv";
+import { transformJson as applyJsonTransform } from "./domain/json";
+import { appendHistory, currentHistoryValue, moveHistory } from "./domain/history";
+import { createDocumentSession } from "./application/documentSession";
+import { findInText } from "./domain/search";
+import { canRecordShortcut, normaliseShortcut } from "./domain/shortcuts";
+import type {
+  CsvGridRow,
+  CsvTable,
+  FileKind,
+  FileNode as Node,
+  Locale,
+  SearchMatch,
+  ViewMode,
+} from "./domain/types";
+import {
+  checkForDesktopUpdate,
+  chooseWorkspaceDirectory,
+  createEditorWindow,
+  currentDesktopWindow,
+  invokeCommand,
+  isDesktopRuntime,
+} from "./infrastructure/tauri";
+import {
+  clampAppearance,
+  defaultAppearance,
+  defaultShortcuts as initialShortcuts,
+  defaultTextTypeSettings,
+  preferenceKeys,
+} from "./domain/preferences";
+import type {
+  AppearanceSettings as Appearance,
+  ShortcutSettings as Shortcut,
+  TextTypeSettings,
+} from "./domain/preferences";
+import {
+  loadLocale,
+  loadRecord,
+  loadStringList,
+  savePreference,
+} from "./infrastructure/preferencesStore";
+import { FileSidebar } from "./components/FileSidebar";
+import { WindowChrome } from "./components/WindowChrome";
+import { WelcomePage } from "./components/WelcomePage";
+import { type SettingsCategory } from "./components/SettingsNavigation";
+import { SettingsDialog } from "./components/SettingsDialog";
+import { SearchDialog } from "./components/SearchDialog";
+import { ErrorDialog } from "./components/ErrorDialog";
+import { EditorToolbar } from "./components/EditorToolbar";
+import { translate } from "./i18n";
 import "./styles.css";
 
-type FileKind = "md" | "json" | "text" | "csv";
-type Node = {
-  name: string;
-  path: string;
-  is_dir: boolean;
-  extension?: FileKind;
-  children?: Node[];
-};
-type Shortcut = { find: string; projectFind: string };
-type ViewMode = "text" | "split" | "preview";
-type Appearance = {
-  fontFamily: string;
-  fontSize: number;
-  lineHeight: number;
-  theme: "ide-dark" | "dim-dark";
-};
-type TextTypeSettings = { markdownView: ViewMode };
 type StartupFile = { path: string; workspace: string };
 type CsvViewMode = "table" | "text";
-type CsvGridRow = Record<string, string> & { __rowId: string };
-type CsvTable = {
-  keys: string[];
-  headers: string[];
-  rows: CsvGridRow[];
-  delimiter: string;
-};
-type SearchMatch = { path: string; line: number; text: string };
 type SearchFocus = { path: string; line: number; query: string };
-
-const allKinds: FileKind[] = ["md", "json", "text", "csv"];
-const labels: Record<FileKind, string> = {
-  md: "Markdown (.md)",
-  json: "JSON (.json)",
-  text: "Text (.txt)",
-  csv: "CSV (.csv)",
-};
-const initialShortcuts: Shortcut = {
-  find: "Ctrl+F",
-  projectFind: "Ctrl+Shift+F",
-};
-const storageKey = "better-md.shortcuts";
-const recentFoldersKey = "better-md.recent-folders";
-const appearanceKey = "better-md.appearance";
-const defaultAppearance: Appearance = {
-  fontFamily: "JetBrains Mono",
-  fontSize: 13,
-  lineHeight: 1.65,
-  theme: "ide-dark",
-};
-const textTypeSettingsKey = "better-md.text-type-settings";
-const defaultTextTypeSettings: TextTypeSettings = { markdownView: "split" };
-
-function findNodeByPath(nodes: Node[], path: string): Node | undefined {
-  for (const node of nodes) {
-    if (node.path === path) return node;
-    const child = node.children && findNodeByPath(node.children, path);
-    if (child) return child;
-  }
-  return undefined;
-}
-
-function lineRange(text: string, line: number) {
-  let start = 0;
-  for (let index = 1; index < line; index += 1) {
-    const nextBreak = text.indexOf("\n", start);
-    if (nextBreak < 0) return { start: text.length, end: text.length };
-    start = nextBreak + 1;
-  }
-  const nextBreak = text.indexOf("\n", start);
-  return { start, end: nextBreak < 0 ? text.length : nextBreak };
-}
 
 const rainbowBracketColors = [
   "#6fa8ff",
@@ -207,212 +175,14 @@ const jsonEditorExtensions = [
   rainbowBracketTheme,
   rainbowBrackets,
 ];
-const csvGridTheme = themeQuartz
-  .withPart(colorSchemeDark)
-  .withParams({
-    accentColor: "#5792ff",
-    fontFamily: "Inter, Microsoft YaHei, sans-serif",
-    borderRadius: 8,
-  });
-
-function parseCsvTable(text: string, hasHeader: boolean): CsvTable {
-  const parsed = Papa.parse<string[]>(text, {
-    skipEmptyLines: false,
-  });
-  const sourceRows = parsed.data.map((row) => row.map((cell) => cell ?? ""));
-  while (sourceRows.length && sourceRows.at(-1)?.every((cell) => !cell)) {
-    sourceRows.pop();
-  }
-  const width = Math.max(1, ...sourceRows.map((row) => row.length));
-  const firstRow = hasHeader ? sourceRows.shift() ?? [] : [];
-  const keys = Array.from({ length: width }, (_, index) => `column_${index}`);
-  const headers = keys.map(
-    (_, index) => firstRow[index]?.trim() || `列 ${index + 1}`,
-  );
-  const rows = sourceRows.map((row, index) =>
-    Object.fromEntries([
-      ["__rowId", `row-${index}`],
-      ...keys.map((key, column) => [key, row[column] ?? ""]),
-    ]),
-  ) as CsvGridRow[];
-  return {
-    keys,
-    headers,
-    rows,
-    delimiter: parsed.meta.delimiter || ",",
-  };
-}
-
-function runningInTauri() {
-  return Boolean(
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__,
-  );
-}
-
-function normaliseKey(event: KeyboardEvent) {
-  const parts: string[] = [];
-  if (event.ctrlKey || event.metaKey) parts.push("Ctrl");
-  if (event.shiftKey) parts.push("Shift");
-  if (event.altKey) parts.push("Alt");
-  const key = event.key.length === 1 ? event.key.toUpperCase() : event.key;
-  if (!["Control", "Shift", "Alt", "Meta"].includes(key)) parts.push(key);
-  return parts.join("+");
-}
-
-function supportedFileKind(path: string): FileKind | undefined {
-  const extension = path.split(".").pop()?.toLowerCase();
-  return extension === "md"
-    ? "md"
-    : extension === "json"
-      ? "json"
-      : extension === "txt"
-        ? "text"
-        : extension === "csv"
-          ? "csv"
-          : undefined;
-}
-
-function resolveWorkspaceLink(currentPath: string, href: string) {
-  const rawPath = decodeURIComponent(href.split("#")[0]);
-  if (/^file:\/\//i.test(rawPath))
-    return rawPath
-      .replace(/^file:\/\//i, "")
-      .replace(/^\/([A-Za-z]:)/, "$1")
-      .replaceAll("/", "\\");
-  if (/^[A-Za-z]:[\\/]/.test(rawPath)) return rawPath.replaceAll("/", "\\");
-  const parts = currentPath.split(/[\\/]+/).slice(0, -1);
-  rawPath.split(/[\\/]+/).forEach((part) => {
-    if (part === "..") parts.pop();
-    else if (part && part !== ".") parts.push(part);
-  });
-  return parts.join("\\");
-}
-
-function Tree({
-  nodes,
-  expanded,
-  onToggle,
-  onOpen,
-  activePath,
-}: {
-  nodes: Node[];
-  expanded: Set<string>;
-  onToggle(path: string): void;
-  onOpen(node: Node): void;
-  activePath?: string;
-}) {
-  return (
-    <ul className="tree">
-      {nodes.map((node) => (
-        <li key={node.path}>
-          {node.is_dir ? (
-            <>
-              <button
-                className="tree-row folder"
-                onClick={() => onToggle(node.path)}
-              >
-                <span>{expanded.has(node.path) ? "▾" : "▸"}</span> 📁{" "}
-                {node.name}
-              </button>
-              {expanded.has(node.path) && (
-                <Tree
-                  nodes={node.children ?? []}
-                  expanded={expanded}
-                  onToggle={onToggle}
-                  onOpen={onOpen}
-                  activePath={activePath}
-                />
-              )}
-            </>
-          ) : (
-            <button
-              className={`tree-row file ${activePath === node.path ? "active" : ""}`}
-              onClick={() => onOpen(node)}
-            >
-              📄 {node.name}
-            </button>
-          )}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function WindowChrome({
-  menuOpen,
-  onMenu,
-  onSettings,
-}: {
-  menuOpen: boolean;
-  onMenu(): void;
-  onSettings(): void;
-}) {
-  const control = async (action: "minimize" | "maximize" | "close") => {
-    if (!runningInTauri()) return;
-    const appWindow = getCurrentWindow();
-    if (action === "minimize") await appWindow.minimize();
-    if (action === "maximize") await appWindow.toggleMaximize();
-    if (action === "close") await appWindow.close();
-  };
-  return (
-    <div className="window-chrome">
-      <div className="chrome-brand">
-        <img src={appIcon} alt="BetterMD" />
-      </div>
-      <button
-        className={`chrome-menu ${menuOpen ? "active" : ""}`}
-        title="主菜单"
-        aria-label="主菜单"
-        aria-expanded={menuOpen}
-        onClick={onMenu}
-      >
-        <Menu size={20} strokeWidth={2} />
-      </button>
-      <div
-        className="window-drag"
-        data-tauri-drag-region
-        onMouseDown={(event) => {
-          if (event.button === 0 && runningInTauri())
-            void getCurrentWindow().startDragging();
-        }}
-      >
-        <span className="chrome-project">BetterMD</span>
-        <span className="chrome-chevron">⌄</span>
-      </div>
-      <div className="window-controls">
-        <button
-          className="chrome-settings"
-          title="设置"
-          aria-label="设置"
-          onClick={onSettings}
-        >
-          <Settings size={15} strokeWidth={1.8} />
-        </button>
-        <button
-          title="最小化"
-          aria-label="最小化"
-          onClick={() => void control("minimize")}
-        >
-          −
-        </button>
-        <button
-          title="最大化或还原"
-          aria-label="最大化或还原"
-          onClick={() => void control("maximize")}
-        >
-          □
-        </button>
-        <button
-          className="close-window"
-          title="关闭窗口"
-          aria-label="关闭窗口"
-          onClick={() => void control("close")}
-        >
-          ×
-        </button>
-      </div>
-    </div>
-  );
+function createCsvGridTheme(fontFamily: string) {
+  return themeQuartz
+    .withPart(colorSchemeDark)
+    .withParams({
+      accentColor: "#5792ff",
+      fontFamily,
+      borderRadius: 8,
+    });
 }
 
 function App() {
@@ -437,49 +207,29 @@ function App() {
   const [fileHistory, setFileHistory] = useState<Node[]>([]);
   const [fileHistoryIndex, setFileHistoryIndex] = useState(-1);
   const [shortcuts, setShortcuts] = useState<Shortcut>(() => ({
-    ...initialShortcuts,
-    ...JSON.parse(localStorage.getItem(storageKey) || "{}"),
+    ...loadRecord(preferenceKeys.shortcuts, initialShortcuts),
   }));
+  const [locale, setLocale] = useState<Locale>(() =>
+    loadLocale(preferenceKeys.locale),
+  );
   const [recordingShortcut, setRecordingShortcut] = useState<keyof Shortcut>();
   const [settings, setSettings] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [recentMenuOpen, setRecentMenuOpen] = useState(false);
-  const [settingsCategory, setSettingsCategory] = useState<
-    "general" | "appearance" | "editor" | "shortcuts" | FileKind
-  >("general");
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("general");
   const [textTypesOpen, setTextTypesOpen] = useState(true);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("split");
   const [recentFolders, setRecentFolders] = useState<string[]>(() => {
-    try {
-      return JSON.parse(
-        localStorage.getItem(recentFoldersKey) || "[]",
-      ) as string[];
-    } catch {
-      return [];
-    }
+    return loadStringList(preferenceKeys.recentFolders);
   });
   const [appearance, setAppearance] = useState<Appearance>(() => {
-    try {
-      return {
-        ...defaultAppearance,
-        ...JSON.parse(localStorage.getItem(appearanceKey) || "{}"),
-      };
-    } catch {
-      return defaultAppearance;
-    }
+    return loadRecord(preferenceKeys.appearance, defaultAppearance);
   });
   const [textTypeSettings, setTextTypeSettings] = useState<TextTypeSettings>(
     () => {
-      try {
-        return {
-          ...defaultTextTypeSettings,
-          ...JSON.parse(localStorage.getItem(textTypeSettingsKey) || "{}"),
-        };
-      } catch {
-        return defaultTextTypeSettings;
-      }
+      return loadRecord(preferenceKeys.textTypes, defaultTextTypeSettings);
     },
   );
   const [search, setSearch] = useState<"file" | "project" | null>(null);
@@ -498,16 +248,33 @@ function App() {
   const csvGridRef = useRef<AgGridReact<CsvGridRow>>(null);
   const plainTextEditorRef = useRef<HTMLTextAreaElement>(null);
   const jsonEditorRef = useRef<ReactCodeMirrorRef>(null);
-  const pendingUpdate = useRef<Awaited<ReturnType<typeof check>>>(null);
+  const pendingUpdate = useRef<Awaited<ReturnType<typeof checkForDesktopUpdate>>>(null);
   const [updateStatus, setUpdateStatus] = useState<
     "idle" | "checking" | "available" | "current" | "installing" | "error"
   >("idle");
   const [updateVersion, setUpdateVersion] = useState<string>();
+  const t = useCallback(
+    (key: string, values?: Record<string, string | number>) =>
+      translate(locale, key, values),
+    [locale],
+  );
+  const editorTypography = useMemo(
+    () => ({
+      fontFamily: `${appearance.fontFamily}, "JetBrains Mono", "DM Mono", Consolas, monospace`,
+      fontSize: `${appearance.fontSize}px`,
+      lineHeight: String(appearance.lineHeight),
+    }),
+    [appearance.fontFamily, appearance.fontSize, appearance.lineHeight],
+  );
+  const csvGridTheme = useMemo(
+    () => createCsvGridTheme(appearance.fontFamily),
+    [appearance.fontFamily],
+  );
 
   const rescan = useCallback(
     async (folder = root, selected = kinds) => {
       if (!folder) return;
-      const result = await invoke<Node[]>("scan_workspace", {
+      const result = await invokeCommand<Node[]>("scan_workspace", {
         root: folder,
         extensions: [...selected],
       });
@@ -520,8 +287,8 @@ function App() {
     void rescan();
   }, [rescan]);
   useEffect(() => {
-    if (!runningInTauri()) return;
-    const appWindow = getCurrentWindow();
+    if (!isDesktopRuntime()) return;
+    const appWindow = currentDesktopWindow();
     let unlisten: (() => void) | undefined;
     const syncMaximized = () => {
       void appWindow.isMaximized().then(setMaximized);
@@ -533,23 +300,27 @@ function App() {
     return () => unlisten?.();
   }, []);
   useEffect(() => {
-    if (root || !runningInTauri() || didHandleAssociatedFile.current) return;
+    if (root || !isDesktopRuntime() || didHandleAssociatedFile.current) return;
     didHandleAssociatedFile.current = true;
-    void invoke<StartupFile | null>("startup_file").then((file) => {
+    void invokeCommand<StartupFile | null>("startup_file").then((file) => {
       if (file) void openWorkspace(file.workspace, file.path);
     });
   }, [root]);
   useEffect(() => {
-    localStorage.setItem(storageKey, JSON.stringify(shortcuts));
+    savePreference(preferenceKeys.shortcuts, shortcuts);
   }, [shortcuts]);
   useEffect(() => {
-    localStorage.setItem(recentFoldersKey, JSON.stringify(recentFolders));
+    savePreference(preferenceKeys.locale, locale);
+    document.documentElement.lang = locale;
+  }, [locale]);
+  useEffect(() => {
+    savePreference(preferenceKeys.recentFolders, recentFolders);
   }, [recentFolders]);
   useEffect(() => {
-    localStorage.setItem(appearanceKey, JSON.stringify(appearance));
+    savePreference(preferenceKeys.appearance, appearance);
   }, [appearance]);
   useEffect(() => {
-    localStorage.setItem(textTypeSettingsKey, JSON.stringify(textTypeSettings));
+    savePreference(preferenceKeys.textTypes, textTypeSettings);
   }, [textTypeSettings]);
   useEffect(() => {
     if (!settings) setRecordingShortcut(undefined);
@@ -578,14 +349,13 @@ function App() {
           return;
         }
         if (["Control", "Shift", "Alt", "Meta"].includes(event.key)) return;
-        const recorded = normaliseKey(event);
-        const isFunctionKey = /^F\d{1,2}$/.test(recorded);
-        if (!isFunctionKey && !event.ctrlKey && !event.metaKey && !event.altKey) return;
+        if (!canRecordShortcut(event)) return;
+        const recorded = normaliseShortcut(event);
         setShortcuts((value) => ({ ...value, [recordingShortcut]: recorded }));
         setRecordingShortcut(undefined);
         return;
       }
-      const key = normaliseKey(event);
+      const key = normaliseShortcut(event);
       if (current && key === "Ctrl+Z" && historyIndex > 0) {
         event.preventDefault();
         setContent(history[historyIndex - 1]);
@@ -657,9 +427,9 @@ function App() {
     setRecentFolders((items) =>
       [folder, ...items.filter((item) => item !== folder)].slice(0, 7),
     );
-    if (!runningInTauri()) {
+    if (!isDesktopRuntime()) {
       setError(
-        "“打开文件夹”需要在 Tauri 桌面应用中运行。请关闭浏览器页面，并在项目目录执行 npm run tauri dev。",
+        t("“打开文件夹”需要在 Tauri 桌面应用中运行。请关闭浏览器页面，并在项目目录执行 npm run tauri dev。"),
       );
       return;
     }
@@ -668,44 +438,34 @@ function App() {
         folder
           .split(/[\\/]+/)
           .filter(Boolean)
-          .slice(-1)[0] || "工作区";
-      const editor = new WebviewWindow(`editor-${Date.now()}`, {
-        url: `/?workspace=${encodeURIComponent(folder)}${fileToOpen ? `&file=${encodeURIComponent(fileToOpen)}` : ""}`,
-        title: `${name} — BetterMD`,
-        width: 1280,
-        height: 860,
-        minWidth: 900,
-        minHeight: 600,
-        decorations: false,
-        shadow: false,
-        transparent: true,
-      });
+          .slice(-1)[0] || t("工作区");
+      const editor = createEditorWindow(
+        `editor-${Date.now()}`,
+        `/?workspace=${encodeURIComponent(folder)}${fileToOpen ? `&file=${encodeURIComponent(fileToOpen)}` : ""}`,
+        `${name} — BetterMD`,
+      );
       editor.once("tauri://created", () => {
-        void getCurrentWindow().close();
+        void currentDesktopWindow().close();
       });
       editor.once("tauri://error", (event) =>
-        setError(`无法创建编辑器窗口：${String(event.payload)}`),
+        setError(t("无法创建编辑器窗口：{reason}", { reason: String(event.payload) })),
       );
     } catch (reason) {
-      setError(`无法打开编辑器窗口：${String(reason)}`);
+      setError(t("无法打开编辑器窗口：{reason}", { reason: String(reason) }));
     }
   };
   const chooseFolder = async () => {
-    if (!runningInTauri()) {
+    if (!isDesktopRuntime()) {
       setError(
-        "“打开文件夹”需要在 Tauri 桌面应用中运行。请关闭浏览器页面，并在项目目录执行 npm run tauri dev。",
+        t("“打开文件夹”需要在 Tauri 桌面应用中运行。请关闭浏览器页面，并在项目目录执行 npm run tauri dev。"),
       );
       return;
     }
     try {
-      const picked = await open({
-        directory: true,
-        multiple: false,
-        title: "选择工作区文件夹",
-      });
+      const picked = await chooseWorkspaceDirectory(t("选择工作区文件夹"));
       if (typeof picked === "string") void openWorkspace(picked);
     } catch (reason) {
-      setError(`无法打开文件夹选择器：${String(reason)}`);
+      setError(t("无法打开文件夹选择器：{reason}", { reason: String(reason) }));
     }
   };
   const toggleKind = (kind: FileKind) =>
@@ -716,28 +476,24 @@ function App() {
     });
   const openFile = async (node: Node, recordFileHistory = true) => {
     try {
-      let fileContent = await invoke<string>("read_text_file", {
+      const fileContent = await invokeCommand<string>("read_text_file", {
         path: node.path,
       });
-      if (node.extension === "json") {
-        try {
-          fileContent = JSON.stringify(JSON.parse(fileContent), null, 2);
-        } catch {
-          // Keep invalid JSON untouched so the editor can help repair it.
-        }
-      }
-      if (node.extension === "csv") {
-        setCsvViewMode("table");
-        setCsvHasHeader(true);
+      const session = createDocumentSession(
+        node,
+        fileContent,
+        textTypeSettings.markdownView,
+      );
+      if (session.csvDefaults) {
+        setCsvViewMode(session.csvDefaults.viewMode);
+        setCsvHasHeader(session.csvDefaults.hasHeader);
         setCsvToolMessage(undefined);
       }
       setCurrent(node);
-      setContent(fileContent);
-      setHistory([fileContent]);
-      setHistoryIndex(0);
-      setViewMode(
-        node.extension === "md" ? textTypeSettings.markdownView : "text",
-      );
+      setContent(session.content);
+      setHistory(session.history.entries);
+      setHistoryIndex(session.history.index);
+      setViewMode(session.viewMode);
       if (recordFileHistory) {
         const baseFileHistory = fileHistory.slice(0, fileHistoryIndex + 1);
         if (baseFileHistory[baseFileHistory.length - 1]?.path !== node.path) {
@@ -747,28 +503,28 @@ function App() {
         }
       }
     } catch (reason) {
-      setError(`无法打开链接文件：${String(reason)}`);
+      setError(t("无法打开链接文件：{reason}", { reason: String(reason) }));
     }
   };
   const updateContent = (nextContent: string) => {
+    const nextHistory = appendHistory(
+      { entries: history, index: historyIndex },
+      nextContent,
+      200,
+    );
     setContent(nextContent);
-    const baseHistory = history.slice(0, historyIndex + 1);
-    if (baseHistory[baseHistory.length - 1] === nextContent) return;
-    const nextHistory = [...baseHistory, nextContent].slice(-200);
-    setHistory(nextHistory);
-    setHistoryIndex(nextHistory.length - 1);
+    setHistory(nextHistory.entries);
+    setHistoryIndex(nextHistory.index);
   };
   const undo = () => {
-    if (historyIndex > 0) {
-      setContent(history[historyIndex - 1]);
-      setHistoryIndex(historyIndex - 1);
-    }
+    const nextHistory = moveHistory({ entries: history, index: historyIndex }, -1);
+    setContent(currentHistoryValue(nextHistory));
+    setHistoryIndex(nextHistory.index);
   };
   const redo = () => {
-    if (historyIndex < history.length - 1) {
-      setContent(history[historyIndex + 1]);
-      setHistoryIndex(historyIndex + 1);
-    }
+    const nextHistory = moveHistory({ entries: history, index: historyIndex }, 1);
+    setContent(currentHistoryValue(nextHistory));
+    setHistoryIndex(nextHistory.index);
   };
   const navigateFileHistory = (direction: -1 | 1) => {
     const nextIndex = fileHistoryIndex + direction;
@@ -779,30 +535,15 @@ function App() {
   };
   const locateCurrent = () => {
     if (!current) return;
-    const parts = current.path.split(/[\\/]+/);
-    const next = new Set<string>();
-    let path = "";
-    parts.slice(0, -1).forEach((part) => {
-      path = path ? `${path}\\${part}` : part;
-      next.add(path);
-    });
-    setExpanded(next);
+    setExpanded(expandedPathsForFile(current.path));
   };
   const runSearch = async () => {
     if (!query.trim()) return setMatches([]);
     if (search === "file") {
-      setMatches(
-        content
-          .split(/\r?\n/)
-          .flatMap((text, index) =>
-            text.toLowerCase().includes(query.toLowerCase())
-              ? [{ path: current?.path ?? "", line: index + 1, text }]
-              : [],
-          ),
-      );
+      setMatches(findInText(content, query, current?.path ?? ""));
     } else if (root)
       setMatches(
-        await invoke("search_workspace", {
+        await invokeCommand("search_workspace", {
           root,
           extensions: [...kinds],
           query,
@@ -812,7 +553,7 @@ function App() {
   const focusSearchMatch = (match: SearchMatch) => {
     const target = match.path ? findNodeByPath(tree, match.path) : current;
     if (!target) {
-      setError("找不到该搜索结果对应的文件。请重新扫描项目后再试。");
+      setError(t("找不到该搜索结果对应的文件。请重新扫描项目后再试。"));
       return;
     }
     setPendingSearchFocus({ path: target.path, line: match.line, query });
@@ -824,40 +565,33 @@ function App() {
   ) => {
     try {
       let next = content;
-      if (action === "format") next = JSON.stringify(JSON.parse(content), null, 2);
-      if (action === "minify") next = JSON.stringify(JSON.parse(content));
-      if (action === "escape") next = JSON.stringify(content).slice(1, -1);
-      if (action === "unescape") {
-        next = JSON.parse(`"${content}"`) as string;
-      }
+      next = applyJsonTransform(content, action);
       if (action === "validate") {
-        JSON.parse(content);
-        setJsonToolMessage("JSON 格式有效");
+        setJsonToolMessage(t("JSON 格式有效"));
         return;
       }
       updateContent(next);
       setJsonToolMessage(
         action === "format"
-          ? "已格式化"
+          ? t("已格式化")
           : action === "minify"
-            ? "已压缩"
+            ? t("已压缩")
             : action === "escape"
-              ? "已转义"
-              : "已去转义",
+              ? t("已转义")
+              : t("已去转义"),
       );
     } catch (reason) {
       setJsonToolMessage(undefined);
-      setError(`JSON 操作失败：${String(reason)}`);
+      setError(t("JSON 操作失败：{reason}", { reason: String(reason) }));
     }
   };
   const isCsv = current?.extension === "csv";
   const csvTable = useMemo(
-    () => (isCsv ? parseCsvTable(content, csvHasHeader) : undefined),
-    [content, csvHasHeader, isCsv],
+    () => (isCsv ? parseCsvTable(content, csvHasHeader, locale) : undefined),
+    [content, csvHasHeader, isCsv, locale],
   );
   const writeCsv = (table: CsvTable, rows = table.rows, header = csvHasHeader) => {
-    const output = rows.map((row) => table.keys.map((key) => row[key] ?? ""));
-    updateContent(Papa.unparse(header ? [table.headers, ...output] : output));
+    updateContent(serializeCsv(table, rows, header));
   };
   const addCsvRow = () => {
     if (!csvTable) return;
@@ -866,23 +600,23 @@ function App() {
       ...csvTable.keys.map((key) => [key, ""]),
     ]) as CsvGridRow;
     writeCsv(csvTable, [...csvTable.rows, row]);
-    setCsvToolMessage("已添加空白行");
+    setCsvToolMessage(t("已添加空白行"));
   };
   const deleteSelectedCsvRows = () => {
     if (!csvTable) return;
     const selected = csvGridRef.current?.api.getSelectedRows() ?? [];
     if (!selected.length) {
-      setCsvToolMessage("请先选择要删除的行");
+      setCsvToolMessage(t("请先选择要删除的行"));
       return;
     }
     const selectedIds = new Set(selected.map((row) => row.__rowId));
     writeCsv(csvTable, csvTable.rows.filter((row) => !selectedIds.has(row.__rowId)));
-    setCsvToolMessage(`已删除 ${selected.length} 行`);
+    setCsvToolMessage(t("已删除 {count} 行", { count: selected.length }));
   };
   const formatCsv = () => {
     if (!csvTable) return;
     writeCsv(csvTable);
-    setCsvToolMessage(`已规范化（${csvTable.delimiter === "\t" ? "Tab" : csvTable.delimiter} 分隔）`);
+    setCsvToolMessage(t("已规范化（{delimiter} 分隔）", { delimiter: csvTable.delimiter === "\t" ? "Tab" : csvTable.delimiter }));
   };
   const shownKinds = useMemo(() => [...kinds], [kinds]);
 
@@ -939,7 +673,7 @@ function App() {
         });
       } else {
         setCsvToolMessage(
-          rowIndex < 0 ? "命中表头，已保留搜索结果" : "未能定位到对应单元格",
+          t(rowIndex < 0 ? "命中表头，已保留搜索结果" : "未能定位到对应单元格"),
         );
       }
     } else {
@@ -974,9 +708,9 @@ function App() {
     viewMode,
   ]);
   const modeLabels: Record<ViewMode, string> = {
-    text: "纯文本",
-    split: "对比预览",
-    preview: "纯预览",
+    text: t("纯文本"),
+    split: t("对比预览"),
+    preview: t("纯预览"),
   };
   const closeMenu = () => {
     setMenuOpen(false);
@@ -988,20 +722,20 @@ function App() {
     setSettings(true);
   };
   const checkForUpdates = async () => {
-    if (!runningInTauri()) {
+    if (!isDesktopRuntime()) {
       setUpdateStatus("error");
-      setError("检查更新仅在已安装的 BetterMD 桌面应用中可用。");
+      setError(t("检查更新仅在已安装的 BetterMD 桌面应用中可用。"));
       return;
     }
     setUpdateStatus("checking");
     try {
-      const update = await check();
+      const update = await checkForDesktopUpdate();
       pendingUpdate.current = update;
       setUpdateVersion(update?.version);
       setUpdateStatus(update ? "available" : "current");
     } catch (reason) {
       setUpdateStatus("error");
-      setError(`检查更新失败：${String(reason)}`);
+      setError(t("检查更新失败：{reason}", { reason: String(reason) }));
     }
   };
   const installUpdate = async () => {
@@ -1012,7 +746,7 @@ function App() {
       await update.downloadAndInstall();
     } catch (reason) {
       setUpdateStatus("error");
-      setError(`下载更新失败：${String(reason)}`);
+      setError(t("下载更新失败：{reason}", { reason: String(reason) }));
     }
   };
 
@@ -1035,11 +769,12 @@ function App() {
           setRecentMenuOpen(false);
         }}
         onSettings={showSettings}
+        t={t}
       />
       {menuOpen && (
         <div className="main-menu">
-          <button disabled title="新建功能即将支持">
-            <span>新建(N)</span>
+          <button disabled title={t("新建功能即将支持")}>
+            <span>{t("新建(N)")}</span>
             <i>›</i>
           </button>
           <button
@@ -1048,10 +783,10 @@ function App() {
               void chooseFolder();
             }}
           >
-            <span>▱&nbsp; 打开(O)…</span>
+            <span>▱&nbsp; {t("打开(O)…")}</span>
           </button>
           <button onClick={() => setRecentMenuOpen((open) => !open)}>
-            <span>最近的项目(R)</span>
+            <span>{t("最近的项目(R)")}</span>
             <i>›</i>
           </button>
           {recentMenuOpen && (
@@ -1073,269 +808,89 @@ function App() {
                   </button>
                 ))
               ) : (
-                <span>没有最近项目</span>
+                <span>{t("没有最近项目")}</span>
               )}
             </div>
           )}
           <button
             disabled={!root}
-            onClick={() => void getCurrentWindow().close()}
+            onClick={() => void currentDesktopWindow().close()}
           >
-            <span>关闭项目(J)</span>
+            <span>{t("关闭项目(J)")}</span>
           </button>
           <hr />
           <button onClick={showSettings}>
-            <span>⚙&nbsp; 设置(I)…</span>
+            <span>⚙&nbsp; {t("设置(I)…")}</span>
             <kbd>Ctrl+Alt+S</kbd>
           </button>
         </div>
       )}
       <main className={!root ? "navigator-window" : ""}>
         {root && (
-          <aside className={sidebarCollapsed ? "collapsed" : ""}>
-            <header>
-              <strong>
-                项目 <span className="header-chevron">⌄</span>
-              </strong>
-              <span className="spacer" />
-              <span className="sidebar-tools">
-                <span className="sidebar-tool-group">
-                  <button
-                    className="icon-button history-button"
-                    title="后退到上一个打开的文件"
-                    aria-label="后退到上一个打开的文件"
-                    disabled={fileHistoryIndex <= 0}
-                    onClick={() => navigateFileHistory(-1)}
-                  >
-                    <ChevronLeft size={16} strokeWidth={2.2} />
-                  </button>
-                  <button
-                    className="icon-button history-button"
-                    title="前进到下一个打开的文件"
-                    aria-label="前进到下一个打开的文件"
-                    disabled={fileHistoryIndex >= fileHistory.length - 1}
-                    onClick={() => navigateFileHistory(1)}
-                  >
-                    <ChevronRight size={16} strokeWidth={2.2} />
-                  </button>
-                </span>
-                <span className="sidebar-tool-group">
-                  <button
-                    className="icon-button"
-                    title="筛选显示的文件类型"
-                    aria-label="筛选显示的文件类型"
-                    aria-expanded={filtersOpen}
-                    onClick={() => setFiltersOpen((open) => !open)}
-                  >
-                    <ListFilter size={15} strokeWidth={2} />
-                  </button>
-                  <button
-                    className="icon-button"
-                    title="定位当前编辑的文件"
-                    aria-label="定位当前编辑的文件"
-                    disabled={!current}
-                    onClick={locateCurrent}
-                  >
-                    <LocateFixed size={15} strokeWidth={2} />
-                  </button>
-                </span>
-              </span>
-            </header>
-            {filtersOpen && (
-              <div className="filters-popover">
-                {allKinds.map((kind) => (
-                  <label key={kind}>
-                    <input
-                      type="checkbox"
-                      checked={kinds.has(kind)}
-                      onChange={() => toggleKind(kind)}
-                    />
-                    {labels[kind]}
-                  </label>
-                ))}
-                <div className="filter-summary" title={shownKinds.join(", ")}>
-                  已选 {shownKinds.length}/4
-                </div>
-              </div>
-            )}
-            {root ? (
-              <Tree
-                nodes={tree}
-                expanded={expanded}
-                onToggle={(path) =>
-                  setExpanded((old) => {
-                    const next = new Set(old);
-                    next.has(path) ? next.delete(path) : next.add(path);
-                    return next;
-                  })
-                }
-                onOpen={openFile}
-                activePath={current?.path}
-              />
-            ) : (
-              <p className="empty">选择一个文件夹以开始阅读。</p>
-            )}
-            <button
-              className="collapse-handle"
-              title={sidebarCollapsed ? "展开文件栏" : "收纳文件栏"}
-              aria-label={sidebarCollapsed ? "展开文件栏" : "收纳文件栏"}
-              onClick={() => setSidebarCollapsed((value) => !value)}
-            >
-              {sidebarCollapsed ? (
-                <PanelLeftOpen size={15} strokeWidth={2} />
-              ) : (
-                <PanelLeftClose size={15} strokeWidth={2} />
-              )}
-            </button>
-          </aside>
+          <FileSidebar
+            nodes={tree}
+            expanded={expanded}
+            activePath={current?.path}
+            sidebarCollapsed={sidebarCollapsed}
+            filtersOpen={filtersOpen}
+            kinds={kinds}
+            shownKinds={shownKinds}
+            historyBackDisabled={fileHistoryIndex <= 0}
+            historyForwardDisabled={fileHistoryIndex >= fileHistory.length - 1}
+            onHistory={navigateFileHistory}
+            onFiltersOpen={() => setFiltersOpen((open) => !open)}
+            onToggleKind={toggleKind}
+            onLocate={locateCurrent}
+            onToggleNode={(path) => setExpanded((old) => {
+              const next = new Set(old);
+              next.has(path) ? next.delete(path) : next.add(path);
+              return next;
+            })}
+            onOpen={openFile}
+            onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
+            t={t}
+          />
         )}
         <section className="editor">
           {!root ? (
-            <div className="welcome-page">
-              <div className="welcome-card">
-                <div className="app-mark">
-                  <img src={appIcon} alt="BetterMD" />
-                </div>
-                <p className="eyebrow">BETTERMD</p>
-                <h1>从一个文件夹开始</h1>
-                <p className="welcome-copy">
-                  阅读、编辑并对照预览本地的 Markdown、JSON、文本与 CSV 文件。
-                </p>
-                <div className="welcome-actions">
-                  <button className="primary-action" onClick={chooseFolder}>
-                    ⌘ 打开文件夹
-                  </button>
-                  <button
-                    onClick={() => {
-                      setSettingsCategory("general");
-                      setSettings(true);
-                    }}
-                  >
-                    ⚙ 偏好设置
-                  </button>
-                </div>
-              </div>
-              <div className="recent-folders">
-                <div className="recent-heading">
-                  <h2>最近打开</h2>
-                  {recentFolders.length > 0 && (
-                    <button
-                      className="text-button"
-                      onClick={() => setRecentFolders([])}
-                    >
-                      清除记录
-                    </button>
-                  )}
-                </div>
-                {recentFolders.length ? (
-                  <div className="recent-list">
-                    {recentFolders.map((folder) => (
-                      <button
-                        key={folder}
-                        className="recent-item"
-                        onClick={() => void openWorkspace(folder)}
-                      >
-                        <span className="recent-icon">
-                          <Folder size={15} strokeWidth={1.8} />
-                        </span>
-                        <span>
-                          <b>
-                            {folder
-                              .split(/[\\/]+/)
-                              .filter(Boolean)
-                              .at(-1)}
-                          </b>
-                          <small>{folder}</small>
-                        </span>
-                        <i>›</i>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="no-recent">
-                    尚未打开过文件夹。你的历史记录只保存在本机。
-                  </p>
-                )}
-              </div>
-            </div>
+            <WelcomePage
+              recentFolders={recentFolders}
+              onChooseFolder={() => void chooseFolder()}
+              onOpenRecent={(folder) => void openWorkspace(folder)}
+              onOpenSettings={() => { setSettingsCategory("general"); setSettings(true); }}
+              onClearRecent={() => setRecentFolders([])}
+              t={t}
+            />
           ) : (
             <>
-              <header>
-                <span>{current?.path ?? "未打开文件"}</span>
-                <span className="spacer" />
-                {isJson && (
-                  <div className="json-tools" aria-label="JSON 工具">
-                    <button title="格式化 JSON" onClick={() => transformJson("format")}>格式化</button>
-                    <button title="压缩 JSON" onClick={() => transformJson("minify")}>压缩</button>
-                    <button title="转义 JSON 文本" onClick={() => transformJson("escape")}>转义</button>
-                    <button title="去转义 JSON 文本" onClick={() => transformJson("unescape")}>去转义</button>
-                    <button title="校验 JSON 格式" onClick={() => transformJson("validate")}>校验</button>
-                    {jsonToolMessage && <span>{jsonToolMessage}</span>}
-                  </div>
-                )}
-                {isCsv && (
-                  <div className="csv-tools" aria-label="CSV 工具">
-                    <div className="csv-view-toggle">
-                      <button
-                        className={csvViewMode === "table" ? "selected" : ""}
-                        onClick={() => setCsvViewMode("table")}
-                      >
-                        表格
-                      </button>
-                      <button
-                        className={csvViewMode === "text" ? "selected" : ""}
-                        onClick={() => setCsvViewMode("text")}
-                      >
-                        原始文本
-                      </button>
-                    </div>
-                    <button onClick={formatCsv}>规范化</button>
-                    <button
-                      className={csvHasHeader ? "selected" : ""}
-                      onClick={() => setCsvHasHeader((value) => !value)}
-                    >
-                      首行表头
-                    </button>
-                    {csvViewMode === "table" && (
-                      <>
-                        <button onClick={addCsvRow}>添加行</button>
-                        <button onClick={deleteSelectedCsvRows}>删除选中行</button>
-                      </>
-                    )}
-                    {csvToolMessage && <span>{csvToolMessage}</span>}
-                  </div>
-                )}
-                {isMarkdown && (
-                  <div className="view-modes" aria-label="Markdown 视图模式">
-                    {(["text", "split", "preview"] as ViewMode[]).map(
-                      (mode) => (
-                        <button
-                          key={mode}
-                          className={viewMode === mode ? "selected" : ""}
-                          onClick={() => setViewMode(mode)}
-                        >
-                          {modeLabels[mode]}
-                        </button>
-                      ),
-                    )}
-                  </div>
-                )}
-                <button
-                  onClick={() => {
-                    setSettingsCategory("general");
-                    setSettings(true);
-                  }}
-                >
-                  ⚙ 设置
-                </button>
-              </header>
+              <EditorToolbar
+                currentPath={current?.path}
+                isJson={isJson}
+                isCsv={isCsv}
+                isMarkdown={isMarkdown}
+                viewMode={viewMode}
+                csvViewMode={csvViewMode}
+                csvHasHeader={csvHasHeader}
+                jsonMessage={jsonToolMessage}
+                csvMessage={csvToolMessage}
+                modeLabels={modeLabels}
+                onJsonAction={transformJson}
+                onCsvViewMode={setCsvViewMode}
+                onFormatCsv={formatCsv}
+                onToggleCsvHeader={() => setCsvHasHeader((value) => !value)}
+                onAddCsvRow={addCsvRow}
+                onDeleteCsvRows={deleteSelectedCsvRows}
+                onMarkdownMode={setViewMode}
+                onSettings={() => { setSettingsCategory("general"); setSettings(true); }}
+                t={t}
+              />
               {!current ? (
                 <div className="editor-empty-state">
                   <div className="editor-empty-icon">
                     <FileText size={28} strokeWidth={1.65} />
                   </div>
-                  <h2>还没有打开文件</h2>
-                  <p>从左侧项目栏选择一个文件，开始阅读或编辑。</p>
+                  <h2>{t("还没有打开文件")}</h2>
+                  <p>{t("从左侧项目栏选择一个文件，开始阅读或编辑。")}</p>
                   <div className="editor-empty-formats">
                     <span>Markdown</span>
                     <span>JSON</span>
@@ -1349,6 +904,7 @@ function App() {
                     ref={jsonEditorRef}
                     value={content}
                     height="100%"
+                    style={editorTypography}
                     theme={oneDark}
                     extensions={jsonEditorExtensions}
                     onChange={(value) => {
@@ -1359,7 +915,7 @@ function App() {
                   />
                 </div>
               ) : isCsv && csvViewMode === "table" && csvTable ? (
-                <div className="csv-editor-shell">
+                <div className="csv-editor-shell" style={editorTypography}>
                   <AgGridReact<CsvGridRow>
                     ref={csvGridRef}
                     theme={csvGridTheme}
@@ -1386,10 +942,11 @@ function App() {
                   {(!isMarkdown || viewMode !== "preview") && (
                     <textarea
                       ref={plainTextEditorRef}
-                      aria-label="文件编辑器"
+                      aria-label={t("文件编辑器")}
+                      style={editorTypography}
                       value={content}
                       onChange={(e) => updateContent(e.target.value)}
-                      placeholder="从左侧打开文件"
+                      placeholder={t("从左侧打开文件")}
                     />
                   )}
                   {isMarkdown && viewMode !== "text" && (
@@ -1405,118 +962,50 @@ function App() {
           )}
         </section>
         {settings && (
-          <div className="modal">
-            <div className="settings-dialog">
-              <nav>
-                <div className="settings-brand">
-                  <img src={appIcon} alt="" /> BetterMD
-                </div>
-                {(
-                  [
-                    { id: "general", label: "通用", icon: SlidersHorizontal },
-                    { id: "appearance", label: "外观", icon: Palette },
-                    { id: "editor", label: "编辑器", icon: FileText },
-                    { id: "shortcuts", label: "快捷键", icon: Keyboard },
-                  ] as const
-                ).map((item) => (
-                  <button
-                    key={item.id}
-                    className={settingsCategory === item.id ? "active" : ""}
-                    onClick={() => setSettingsCategory(item.id)}
-                  >
-                    <span>
-                      <item.icon size={14} strokeWidth={1.8} />
-                    </span>
-                    {item.label}
-                  </button>
-                ))}
-                <button
-                  className={`text-types-toggle ${["md", "json", "text", "csv"].includes(settingsCategory) ? "active" : ""}`}
-                  onClick={() => setTextTypesOpen((open) => !open)}
-                >
-                  <span>
-                    <Type size={14} strokeWidth={1.8} />
-                  </span>
-                  文本类型 <i>{textTypesOpen ? "⌄" : "›"}</i>
-                </button>
-                {textTypesOpen && (
-                  <div className="text-type-submenu">
-                    {allKinds.map((kind) => (
-                      <button
-                        key={kind}
-                        className={settingsCategory === kind ? "active" : ""}
-                        onClick={() => setSettingsCategory(kind)}
-                      >
-                        {kind === "md" ? (
-                          <>
-                            <FileText size={13} />
-                            Markdown
-                          </>
-                        ) : kind === "json" ? (
-                          <>
-                            <Braces size={13} />
-                            JSON
-                          </>
-                        ) : kind === "csv" ? (
-                          <>
-                            <Table2 size={13} />
-                            CSV
-                          </>
-                        ) : (
-                          <>
-                            <Type size={13} />
-                            Text
-                          </>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </nav>
-              <div className="settings-content">
-                <header>
-                  <div>
-                    <p className="eyebrow">偏好设置</p>
-                    <h2>
-                      {settingsCategory === "general"
-                        ? "通用"
-                        : settingsCategory === "appearance"
-                          ? "外观"
-                          : settingsCategory === "editor"
-                            ? "编辑器"
-                            : settingsCategory === "shortcuts"
-                              ? "快捷键"
-                              : settingsCategory === "md"
-                                ? "Markdown"
-                                : labels[settingsCategory]}
-                    </h2>
-                  </div>
-                  <button
-                    className="close-button"
-                    title="关闭设置"
-                    onClick={() => setSettings(false)}
-                  >
-                    ×
-                  </button>
-                </header>
+          <SettingsDialog
+            category={settingsCategory}
+            textTypesOpen={textTypesOpen}
+            onCategory={setSettingsCategory}
+            onToggleTextTypes={() => setTextTypesOpen((open) => !open)}
+            onClose={() => setSettings(false)}
+            t={t}
+          >
                 {settingsCategory === "general" && (
                   <div className="settings-panel">
                     <section>
-                      <h3>应用更新</h3>
+                      <h3>{t("界面语言")}</h3>
+                      <p>{t("选择 BetterMD 的显示语言，修改后立即生效。")}</p>
+                      <div className="theme-options">
+                        <button
+                          className={locale === "zh-CN" ? "selected" : ""}
+                          onClick={() => setLocale("zh-CN")}
+                        >
+                          {t("简体中文")}
+                        </button>
+                        <button
+                          className={locale === "en-US" ? "selected" : ""}
+                          onClick={() => setLocale("en-US")}
+                        >
+                          {t("English")}
+                        </button>
+                      </div>
+                    </section>
+                    <section>
+                      <h3>{t("应用更新")}</h3>
                       <p>
                         {updateStatus === "available"
-                          ? `发现 BetterMD ${updateVersion}，可下载并安装。`
+                          ? t("发现 BetterMD {version}，可下载并安装。", { version: updateVersion ?? "" })
                           : updateStatus === "current"
-                            ? "当前已是最新版本。"
+                            ? t("当前已是最新版本。")
                             : updateStatus === "checking"
-                              ? "正在检查更新…"
+                              ? t("正在检查更新…")
                               : updateStatus === "installing"
-                                ? "正在下载并安装更新…"
-                                : "从 BetterMD 的正式发布版本检查更新。"}
+                                ? t("正在下载并安装更新…")
+                                : t("从 BetterMD 的正式发布版本检查更新。")}
                       </p>
                       {updateStatus === "available" ? (
                         <button onClick={() => void installUpdate()}>
-                          下载并安装 {updateVersion}
+                          {t("下载并安装 {version}", { version: updateVersion ?? "" })}
                         </button>
                       ) : (
                         <button
@@ -1526,20 +1015,20 @@ function App() {
                             updateStatus === "installing"
                           }
                         >
-                          检查更新
+                          {t("检查更新")}
                         </button>
                       )}
                     </section>
                     <section>
-                      <h3>最近打开</h3>
+                      <h3>{t("最近打开")}</h3>
                       <p>
-                        最近文件夹仅保存在当前设备，可从启动页快速重新打开。
+                        {t("最近文件夹仅保存在当前设备，可从启动页快速重新打开。")}
                       </p>
                       <button
                         onClick={() => setRecentFolders([])}
                         disabled={!recentFolders.length}
                       >
-                        清除最近记录
+                        {t("清除最近记录")}
                       </button>
                     </section>
                   </div>
@@ -1547,10 +1036,10 @@ function App() {
                 {settingsCategory === "appearance" && (
                   <div className="settings-panel">
                     <section>
-                      <h3>编辑器字体</h3>
-                      <p>仅影响源文本编辑区，不影响 Markdown 预览排版。</p>
+                      <h3>{t("编辑器字体")}</h3>
+                      <p>{t("仅影响源文本编辑区，不影响 Markdown 预览排版。")}</p>
                       <label>
-                        字体
+                        {t("字体")}
                         <select
                           value={appearance.fontFamily}
                           onChange={(e) =>
@@ -1566,25 +1055,21 @@ function App() {
                         </select>
                       </label>
                       <label>
-                        字号
+                        {t("字号")}
                         <input
                           type="number"
                           min="11"
                           max="24"
                           value={appearance.fontSize}
                           onChange={(e) =>
-                            setAppearance((value) => ({
-                              ...value,
-                              fontSize: Math.max(
-                                11,
-                                Math.min(24, Number(e.target.value) || 13),
-                              ),
-                            }))
+                            setAppearance((value) =>
+                              clampAppearance(value, "fontSize", Number(e.target.value)),
+                            )
                           }
                         />
                       </label>
                       <label>
-                        行间距
+                        {t("行间距")}
                         <input
                           type="number"
                           min="1.2"
@@ -1592,22 +1077,17 @@ function App() {
                           step="0.05"
                           value={appearance.lineHeight}
                           onChange={(e) =>
-                            setAppearance((value) => ({
-                              ...value,
-                              lineHeight: Math.max(
-                                1.2,
-                                Math.min(2.4, Number(e.target.value) || 1.65),
-                              ),
-                            }))
+                            setAppearance((value) =>
+                              clampAppearance(value, "lineHeight", Number(e.target.value)),
+                            )
                           }
                         />
                       </label>
                     </section>
                     <section>
-                      <h3>皮肤</h3>
+                      <h3>{t("皮肤")}</h3>
                       <p>
-                        选择更贴近 JetBrains IDE
-                        的基础深色，或层次更柔和的暗色皮肤。
+                        {t("选择更贴近 JetBrains IDE 的基础深色，或层次更柔和的暗色皮肤。")}
                       </p>
                       <div className="theme-options">
                         <button
@@ -1621,7 +1101,7 @@ function App() {
                             }))
                           }
                         >
-                          IDE 深色
+                          {t("IDE 深色")}
                         </button>
                         <button
                           className={
@@ -1634,41 +1114,23 @@ function App() {
                             }))
                           }
                         >
-                          柔和暗色
+                          {t("柔和暗色")}
                         </button>
                       </div>
-                    </section>
-                  </div>
-                )}
-                {settingsCategory === "editor" && (
-                  <div className="settings-panel">
-                    <section>
-                      <h3>Markdown 默认视图</h3>
-                      <p>
-                        新打开的 Markdown
-                        文件默认进入对比预览模式，以便同时查看源内容和渲染结果。
-                      </p>
-                      <span className="setting-value">对比预览</span>
-                    </section>
-                    <section>
-                      <h3>后续设置</h3>
-                      <p>
-                        这里将承载自动换行、缩进、保存策略和语言高亮等编辑器偏好。
-                      </p>
                     </section>
                   </div>
                 )}
                 {settingsCategory === "md" && (
                   <div className="settings-panel text-type-panel">
                     <section>
-                      <h3>默认预览方式</h3>
-                      <p>之后每次打开 Markdown 文件时，都会自动使用此视图。</p>
+                      <h3>{t("默认预览方式")}</h3>
+                      <p>{t("之后每次打开 Markdown 文件时，都会自动使用此视图。")}</p>
                       <div className="theme-options view-default-options">
                         {(
                           [
-                            ["text", "纯文本"],
-                            ["split", "对比预览"],
-                            ["preview", "纯预览"],
+                            ["text", t("纯文本")],
+                            ["split", t("对比预览")],
+                            ["preview", t("纯预览")],
                           ] as const
                         ).map(([mode, label]) => (
                           <button
@@ -1692,35 +1154,11 @@ function App() {
                     </section>
                   </div>
                 )}
-                {settingsCategory === "json" && (
-                  <div className="settings-panel text-type-panel">
-                    <section>
-                      <h3>JSON</h3>
-                      <p>JSON 的树形预览、格式化和校验选项将在这里提供。</p>
-                    </section>
-                  </div>
-                )}
-                {settingsCategory === "text" && (
-                  <div className="settings-panel text-type-panel">
-                    <section>
-                      <h3>文本</h3>
-                      <p>纯文本的换行、编码和阅读宽度选项将在这里提供。</p>
-                    </section>
-                  </div>
-                )}
-                {settingsCategory === "csv" && (
-                  <div className="settings-panel text-type-panel">
-                    <section>
-                      <h3>CSV</h3>
-                      <p>CSV 的分隔符、首行表头和表格视图选项将在这里提供。</p>
-                    </section>
-                  </div>
-                )}
                 {settingsCategory === "shortcuts" && (
                   <div className="settings-panel">
                     <section>
-                      <h3>搜索当前文件</h3>
-                      <p>在当前正在编辑的文件中搜索。点击快捷键后直接按下组合键。</p>
+                      <h3>{t("搜索当前文件")}</h3>
+                      <p>{t("在当前正在编辑的文件中搜索。点击快捷键后直接按下组合键。")}</p>
                       <button
                         type="button"
                         className={`shortcut-recorder ${recordingShortcut === "find" ? "is-recording" : ""}`}
@@ -1728,13 +1166,13 @@ function App() {
                         onClick={() => setRecordingShortcut("find")}
                       >
                         {recordingShortcut === "find"
-                          ? "请按下快捷键…"
-                          : shortcuts.find || "未设置"}
+                          ? t("请按下快捷键…")
+                          : shortcuts.find || t("未设置")}
                       </button>
                     </section>
                     <section>
-                      <h3>搜索当前项目</h3>
-                      <p>仅搜索文件栏中当前已勾选的文件类型。点击后直接录制组合键。</p>
+                      <h3>{t("搜索当前项目")}</h3>
+                      <p>{t("仅搜索文件栏中当前已勾选的文件类型。点击后直接录制组合键。")}</p>
                       <button
                         type="button"
                         className={`shortcut-recorder ${recordingShortcut === "projectFind" ? "is-recording" : ""}`}
@@ -1742,56 +1180,31 @@ function App() {
                         onClick={() => setRecordingShortcut("projectFind")}
                       >
                         {recordingShortcut === "projectFind"
-                          ? "请按下快捷键…"
-                          : shortcuts.projectFind || "未设置"}
+                          ? t("请按下快捷键…")
+                          : shortcuts.projectFind || t("未设置")}
                       </button>
                     </section>
                     <p className="shortcut-recorder-hint">
-                      支持 Ctrl / Shift / Alt 组合与功能键。按 Esc 取消；按 Backspace 或 Delete 清空。
+                      {t("支持 Ctrl / Shift / Alt 组合与功能键。按 Esc 取消；按 Backspace 或 Delete 清空。")}
                     </p>
                   </div>
                 )}
-              </div>
-            </div>
-          </div>
+          </SettingsDialog>
         )}
         {search && (
-          <div className="modal">
-            <div className="dialog">
-              <h2>{search === "file" ? "搜索当前文件" : "搜索当前项目"}</h2>
-              <input
-                autoFocus
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && void runSearch()}
-                placeholder="输入关键词，按 Enter 搜索"
-              />
-              {matches.map((match) => (
-                <button
-                  className="result"
-                  key={`${match.path}:${match.line}`}
-                  onClick={() => focusSearchMatch(match)}
-                >
-                  <b>
-                    {match.path
-                      ? `${match.path}:${match.line}`
-                      : `第 ${match.line} 行`}
-                  </b>
-                  <span>{match.text}</span>
-                </button>
-              ))}
-              <button onClick={() => setSearch(null)}>关闭</button>
-            </div>
-          </div>
+          <SearchDialog
+            scope={search}
+            query={query}
+            matches={matches}
+            onQueryChange={setQuery}
+            onSearch={() => void runSearch()}
+            onMatch={focusSearchMatch}
+            onClose={() => setSearch(null)}
+            t={t}
+          />
         )}
         {error && (
-          <div className="modal">
-            <div className="dialog">
-              <h2>无法执行此操作</h2>
-              <p>{error}</p>
-              <button onClick={() => setError(undefined)}>知道了</button>
-            </div>
-          </div>
+          <ErrorDialog message={error} onClose={() => setError(undefined)} t={t} />
         )}
       </main>
     </div>
